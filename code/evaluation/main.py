@@ -41,6 +41,23 @@ ALLOWED_OPERATIONS = {
 }
 
 PHASE_ORDER = {"FINDING": 1, "REMEDIATION": 2, "VERIFICATION": 3}
+OP_ORDER = {
+    "REPORT_REMAINING_RECORD": 1,
+    "REPORT_EXPOSED_PII": 2,
+    "REPORT_ACTIVE_DATA_FLOW": 3,
+    "REPORT_RESTORE_RISK": 4,
+    "DISABLE_DATA_FLOW": 1,
+    "BLOCK_RESTORE": 2,
+    "DELETE_RECORD": 3,
+    "REDACT_RECORD": 4,
+    "ANONYMIZE_RECORD": 5,
+    "VERIFY_RECORD_ABSENT": 1,
+    "VERIFY_RECORD_PRESENT": 2,
+    "VERIFY_RECORD_REDACTED": 3,
+    "VERIFY_RECORD_ANONYMIZED": 4,
+    "VERIFY_DATA_FLOW_DISABLED": 5,
+    "VERIFY_RESTORE_BLOCKED": 6,
+}
 
 
 def validate_evidence_reference(ev_id, cid, s_no, phase, issues, valid_file_ids=None, valid_activity_ids=None, valid_audit_ids=None):
@@ -110,7 +127,15 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
         if not os.path.exists(csv_path_or_rows):
             return False, [f"Output file does not exist: {csv_path_or_rows}"]
         with open(csv_path_or_rows, "r", encoding="utf-8") as f:
-            reader = list(csv.DictReader(f))
+            first_line = f.readline()
+            headers_raw = [h.strip() for h in first_line.strip().split(",")]
+            if len(headers_raw) != len(set(headers_raw)):
+                issues.append(f"Duplicate CSV headers detected: {headers_raw}")
+            f.seek(0)
+            dr = csv.DictReader(f)
+            if dr.fieldnames != ["case_id", "deletion_status", "steps_json"]:
+                issues.append(f"Invalid CSV header: expected ['case_id', 'deletion_status', 'steps_json'], got {dr.fieldnames}")
+            reader = list(dr)
 
     if expected_row_count is not None and len(reader) != expected_row_count:
         issues.append(f"Row count mismatch: expected {expected_row_count}, got {len(reader)}")
@@ -118,8 +143,18 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
     seen_cases = set()
     actual_case_ids = []
     REQUIRED_STEP_KEYS = {"step_no", "phase", "system_id", "resource_id", "operation", "state", "evidence_id"}
+    REQUIRED_ROW_COLS = {"case_id", "deletion_status", "steps_json"}
 
     for row_idx, row in enumerate(reader, start=1):
+        row_keys = set(row.keys())
+        if row_keys != REQUIRED_ROW_COLS:
+            missing_cols = REQUIRED_ROW_COLS - row_keys
+            extra_cols = row_keys - REQUIRED_ROW_COLS
+            if missing_cols:
+                issues.append(f"Row {row_idx}: Missing required CSV columns: {missing_cols}")
+            if extra_cols:
+                issues.append(f"Row {row_idx}: Unexpected CSV columns: {extra_cols}")
+
         cid = row.get("case_id", "").strip()
         status = row.get("deletion_status", "").strip()
         steps_raw = row.get("steps_json", "").strip()
@@ -155,6 +190,9 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
             if len(steps) == 0:
                 issues.append(f"Case {cid} (COMPLETE): COMPLETE prediction must have at least one verification step proving state, got empty steps")
             for s in steps:
+                if not isinstance(s, dict):
+                    issues.append(f"Case {cid} (COMPLETE): contains non-dictionary step: {s}")
+                    continue
                 if s.get("phase") != "VERIFICATION":
                     issues.append(f"Case {cid} (COMPLETE): contains non-VERIFICATION step phase '{s.get('phase')}'")
                 validate_evidence_reference(s.get("evidence_id"), cid, s.get("step_no", "?"), "VERIFICATION", issues, valid_file_ids, valid_activity_ids, valid_audit_ids)
@@ -164,6 +202,7 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
                 issues.append(f"Case {cid} (INCOMPLETE): INCOMPLETE prediction must have findings and remediation steps, got empty steps")
 
         current_phase_num = 0
+        prev_step_key = None
         for expected_step_no, step in enumerate(steps, start=1):
             if not isinstance(step, dict):
                 issues.append(f"Case {cid}: Step {expected_step_no} is not a JSON object")
@@ -186,7 +225,8 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
             st = step.get("state")
             ev_id = step.get("evidence_id", "")
 
-            if not isinstance(s_no, int):
+            # Strict integer check: reject bool as integer
+            if type(s_no) is not int or isinstance(s_no, bool):
                 issues.append(f"Case {cid}: Step number {s_no} must be an integer, got {type(s_no).__name__}")
             elif s_no != expected_step_no:
                 issues.append(f"Case {cid}: Step number {s_no} is non-consecutive (expected {expected_step_no})")
@@ -196,6 +236,12 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
                     issues.append(f"Case {cid}: Field '{field_name}' in step {expected_step_no} must be a string, got {type(str_field).__name__}")
 
             p_num = PHASE_ORDER.get(phase, 99)
+            op_num = OP_ORDER.get(op, 99)
+            step_key = (p_num, op_num, str(sys_id), str(res_id))
+            if prev_step_key is not None and step_key < prev_step_key:
+                issues.append(f"Case {cid}: Step {expected_step_no} violates contract order ({step_key} precedes previous {prev_step_key})")
+            prev_step_key = step_key
+
             if p_num < current_phase_num:
                 issues.append(f"Case {cid}: Phase out of order '{phase}' after phase number {current_phase_num}")
             current_phase_num = max(current_phase_num, p_num)

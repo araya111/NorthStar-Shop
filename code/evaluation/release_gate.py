@@ -128,10 +128,15 @@ def run_gate_2_offline_isolation():
     has_unshare = False
     if sys.platform != "win32":
         import shutil
-        has_unshare = shutil.which("unshare") is not None
+        if shutil.which("unshare") is not None:
+            try:
+                probe = subprocess.run(["unshare", "-n", sys.executable, "-c", "import socket; print('OK')"], capture_output=True, text=True)
+                has_unshare = (probe.returncode == 0 and "OK" in probe.stdout)
+            except Exception:
+                has_unshare = False
 
     if has_unshare:
-        print("  [OK] OS-level network namespace isolation (unshare -n) is available and active.")
+        print("  [OK] OS-level network namespace isolation (unshare -n) was actively tested and verified.")
     else:
         print(f"  [INSPECTED - NOT RUN] OS-level network namespace isolation is unavailable on host OS ({sys.platform}). Verified offline execution via Python AST module audit and runtime socket interception blocking.")
 
@@ -317,13 +322,21 @@ def run_gate_7_complete_evidence():
 
 
 def run_gate_8_determinism():
-    print("\n[Gate 8/9] Verifying determinism across repeated executions...")
+    print("\n[Gate 8/9] Verifying cross-process determinism across independent executions with distinct PYTHONHASHSEED...")
     out1 = os.path.join(BASE_DIR, "temp_det_1.csv")
     out2 = os.path.join(BASE_DIR, "temp_det_2.csv")
 
     try:
-        run_pipeline(target_csv="sample_deletion_requests.csv", output_csv_path=out1)
-        run_pipeline(target_csv="sample_deletion_requests.csv", output_csv_path=out2)
+        env1 = dict(os.environ, PYTHONHASHSEED="0")
+        env2 = dict(os.environ, PYTHONHASHSEED="42")
+        res1 = subprocess.run([sys.executable, "code/main.py", "--sample", "--output-csv", out1], cwd=BASE_DIR, env=env1, capture_output=True, text=True)
+        if res1.returncode != 0:
+            print(f"  [FAIL] Determinism run 1 failed:\n{res1.stderr}", file=sys.stderr)
+            return False
+        res2 = subprocess.run([sys.executable, "code/main.py", "--sample", "--output-csv", out2], cwd=BASE_DIR, env=env2, capture_output=True, text=True)
+        if res2.returncode != 0:
+            print(f"  [FAIL] Determinism run 2 failed:\n{res2.stderr}", file=sys.stderr)
+            return False
 
         with open(out1, "rb") as f1, open(out2, "rb") as f2:
             h1 = hashlib.sha256(f1.read()).hexdigest()
@@ -333,7 +346,7 @@ def run_gate_8_determinism():
             print(f"  [FAIL] Determinism failure: SHA-256 hash mismatch between runs: {h1} vs {h2}", file=sys.stderr)
             return False
 
-        print(f"  [OK] Output is 100% deterministic (SHA-256: {h1[:16]}...).")
+        print(f"  [OK] Output is 100% deterministic across distinct processes and PYTHONHASHSEED (SHA-256: {h1[:16]}...).")
         return True
     finally:
         for p in (out1, out2):
@@ -458,7 +471,7 @@ def run_all_gates():
     gates = [
         ("Static Syntax Checks", run_gate_1_syntax),
         ("Zero External API & Network Dependency Check", run_gate_2_offline_isolation),
-        ("Adversarial Unit & Regression Tests (30 scenarios)", run_gate_3_tests),
+        ("Adversarial Unit & Regression Tests (35 scenarios)", run_gate_3_tests),
         ("Sample Benchmark Evaluation", run_gate_4_benchmark),
         ("Full 518-Request Pipeline Run (Active Socket Isolation)", run_gate_5_pipeline),
         ("Output Contract & Coverage Validation", run_gate_6_contract),

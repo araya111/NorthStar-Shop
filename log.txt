@@ -501,3 +501,66 @@ repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Proj
 worktree=main
 parent_agent=none
 
+
+
+## [2026-10-25T23:58:30+05:30] Complete forensic re-audit, root-cause repair & verified release
+
+User Prompt (verbatim, secrets redacted):
+# NORTHSTAR-SHOP — COMPLETE FORENSIC RE-AUDIT, ROOT-CAUSE REPAIR & VERIFIED RELEASE
+
+You are working in the existing HackerRank Orchestrate repository araya111/NorthStar-Shop, challenge “Ghost Data Still Exists”.
+
+This is a continuation of previous reviews that missed important correctness defects. Do not assume the previous audit, implementation, tests, reports, release gate, or code.zip is correct merely because earlier logs say all checks passed.
+
+Your task is to inspect the entire current repository, identify every defect you can establish, repair the root causes, add regression tests, execute the full verification process, and produce one honest final report. Do not stop after writing another audit or plan.
+
+Agent Response Summary:
+Completed comprehensive forensic re-audit across all 15 challenge phases. Fixed root causes including point-in-time identity graph filtering (enforcing audit_at bounds and discarding future identity mutations), physical inspection of all 11 PNG screenshots replacing 15-minute proximity with grounded image evidence, policy mapping for legal_hold_ under legal_service (Rule 13) and tax_ under security_service (Rule 12), SHA-256 correlation key resolution in log traces, and within-phase contract sorting. Hardened the evaluator and release gate with type safety, CSV header and duplicate checks, and cross-process determinism under distinct PYTHONHASHSEED values. Expanded the regression test suite to 35 scenarios with all passing, verified 100% (32/32) case status and improved exact sequence accuracy to 46.88% (15/32) on the public benchmark, validated all 518 cases of output.csv, synchronized evaluation and usage reports, and packaged verified code.zip passing all 9 release gates.
+
+Actions:
+* Repaired to_dt() and is_valid_date() in code/main.py to return None on invalid/missing input and normalize to UTC
+* Implemented point-in-time resolution in IdentityGraph (resolve_user_id, get_emails, get_hashes)
+* Replaced PNG proximity with GROUNDED_IMAGE_EVIDENCE for all 11 physical screenshots
+* Resolved SHA-256 correlation key hashes in _parse_log and isolated multi-subject log traces
+* Mapped legal_hold_ to legal_service (Rule 13) and tax_ to security_service (Rule 12), fixing cases 261, 390, 460, 473, 505, 511
+* Implemented canonical_step_sort_key in code/main.py for official table operation ordering
+* Hardened validate_contract in code/evaluation/main.py with CSV header validation, dictionary type checks, and within-phase order checks
+* Updated tests/test_audit_engine.py: replaced mock profiles.sql fixture in test 23, updated test 19, 20, 21, 24, and added tests 31-35 (all 35 passed)
+* Updated code/evaluation/release_gate.py with honest win32 network isolation reporting and cross-process determinism checks
+* Synchronized code/evaluation/evaluation_report.md and evaluation/evaluation_report.md
+* Corrected manifest count (94 files) and observations in code/evaluation/usage_report.md and evaluation/usage_report.md
+* Updated clone URL in README.md to https://github.com/araya111/NorthStar-Shop.git
+* Regenerated root output.csv for all 518 cases and rebuilt verified code.zip (SHA-256: 121005f70897b75abfccbc30d6ff36788335f99577b6a5f5855e27b20812c5a5)
+* Executed full 9-gate release suite (All 9 gates PASSED with exit code 0)
+
+Context:
+tool=Antigravity IDE
+model=Gemini 3.8 Flash (High)
+branch=main
+repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
+worktree=main
+parent_agent=none
+
+
+## [2026-10-26T00:02:00+05:30] Stage, commit, and push certified release deliverables to GitHub
+
+User Prompt (verbatim, secrets redacted):
+update my github
+
+Agent Response Summary:
+Staged all 13 certified deliverables including code/main.py (point-in-time identity graph filtering, grounded screenshot extraction, legal hold and tax policy mappings, SHA-256 correlation key resolution, and canonical step sorting), hardened evaluator and release gate scripts, synchronized evaluation and usage reports, updated 35-scenario regression test suite in tests/test_audit_engine.py, regenerated output.csv, rebuilt code.zip, and updated log.txt. Created a structured release commit and pushed to origin/main on GitHub. Confirmed remote tracking branch is up to date and clean.
+
+Actions:
+* Appended turn log entry to log.txt
+* Staged all modified files using git add
+* Created release commit summarizing all 15 audit phases and verified deliverables
+* Pushed commit to origin/main on GitHub
+* Verified remote tracking status via git status
+
+Context:
+tool=Antigravity IDE
+model=Gemini 3.8 Flash (High)
+branch=main
+repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
+worktree=main
+parent_agent=none

@@ -354,32 +354,120 @@ class TestAuditEngineRegression(unittest.TestCase):
         self.assertTrue(is_valid)
 
     # -------------------------------------------------------------------------
-    # Scenario 19: Malformed CSV/JSON or missing required columns
+    # Scenario 19: Malformed CSV/JSON, missing/extra columns, contract errors
     # -------------------------------------------------------------------------
-    def test_19_malformed_json_caught_by_evaluator(self):
-        malformed_row = [{"case_id": "c19", "deletion_status": "COMPLETE", "steps_json": "NOT_A_JSON_ARRAY"}]
-        is_valid, issues = validate_contract(malformed_row, expected_row_count=1)
+    def test_19_malformed_csv_json_and_contract_validation(self):
+        # 1. Malformed JSON array
+        malformed_json_row = [{"case_id": "c19_a", "deletion_status": "COMPLETE", "steps_json": "NOT_A_JSON_ARRAY"}]
+        is_valid, issues = validate_contract(malformed_json_row, expected_row_count=1)
         self.assertFalse(is_valid)
         self.assertTrue(any("Invalid JSON" in iss for iss in issues))
 
-    # -------------------------------------------------------------------------
-    # Scenario 20: Incomplete pipeline inputs and invalid timestamps
-    # -------------------------------------------------------------------------
-    def test_20_timestamp_parsing_robustness(self):
-        self.assertIsNotNone(to_dt("2026-05-01T12:00:00Z"))
-        self.assertIsNotNone(to_dt("2026-05-01 12:00:00"))
-        # Invalid timestamp falls back gracefully to epoch without crashing
-        fallback = to_dt("MALFORMED_TIMESTAMP")
-        self.assertEqual(fallback.year, 1970)
+        # 2. Missing required CSV column 'steps_json'
+        missing_col_row = [{"case_id": "c19_b", "deletion_status": "COMPLETE"}]
+        is_valid, issues = validate_contract(missing_col_row, expected_row_count=1)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("Missing required CSV columns" in iss for iss in issues))
+
+        # 3. Unexpected extra CSV column
+        extra_col_row = [{"case_id": "c19_c", "deletion_status": "NOT_APPLICABLE", "steps_json": "[]", "unexpected_col": "extra"}]
+        is_valid, issues = validate_contract(extra_col_row, expected_row_count=1)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("Unexpected CSV columns" in iss for iss in issues))
+
+        # 4. Duplicate headers in CSV file
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False, encoding="utf-8") as tf:
+            tf.write("case_id,deletion_status,steps_json,case_id\ncase_dup,NOT_APPLICABLE,[],case_dup\n")
+            dup_csv_path = tf.name
+        try:
+            is_valid, issues = validate_contract(dup_csv_path, expected_row_count=1)
+            self.assertFalse(is_valid)
+            self.assertTrue(any("Duplicate CSV headers" in iss for iss in issues))
+        finally:
+            if os.path.exists(dup_csv_path):
+                os.remove(dup_csv_path)
+
+        # 5. Invalid CSV header names
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False, encoding="utf-8") as tf:
+            tf.write("id,status,steps\ncase_bad,NOT_APPLICABLE,[]\n")
+            bad_hdr_path = tf.name
+        try:
+            is_valid, issues = validate_contract(bad_hdr_path, expected_row_count=1)
+            self.assertFalse(is_valid)
+            self.assertTrue(any("Invalid CSV header" in iss for iss in issues))
+        finally:
+            if os.path.exists(bad_hdr_path):
+                os.remove(bad_hdr_path)
+
+        # 6. Non-object step in steps array
+        bad_step_type = [{"case_id": "c19_d", "deletion_status": "COMPLETE", "steps_json": json.dumps([123])}]
+        is_valid, issues = validate_contract(bad_step_type, expected_row_count=1)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("Step 1 is not a JSON object" in iss or "non-dictionary" in iss for iss in issues))
+
+        # 7. Boolean step_no rejected
+        bool_step_no = [{
+            "case_id": "c19_e", "deletion_status": "COMPLETE",
+            "steps_json": json.dumps([{"step_no": True, "phase": "VERIFICATION", "system_id": "s", "resource_id": "r", "operation": "VERIFY_RECORD_ABSENT", "state": "ABSENT", "evidence_id": "evidence_01"}])
+        }]
+        is_valid, issues = validate_contract(bool_step_no, expected_row_count=1, valid_file_ids={"evidence_01"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("must be an integer, got bool" in iss for iss in issues))
+
+        # 8. Invalid operation / state mismatch
+        mismatched_state = [{
+            "case_id": "c19_f", "deletion_status": "COMPLETE",
+            "steps_json": json.dumps([{"step_no": 1, "phase": "VERIFICATION", "system_id": "s", "resource_id": "r", "operation": "VERIFY_RECORD_ABSENT", "state": "PRESENT", "evidence_id": "evidence_01"}])
+        }]
+        is_valid, issues = validate_contract(mismatched_state, expected_row_count=1, valid_file_ids={"evidence_01"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("expected state 'ABSENT', got 'PRESENT'" in iss for iss in issues))
 
     # -------------------------------------------------------------------------
-    # Scenario 21: Repeated execution determinism
+    # Scenario 20: Incomplete pipeline inputs and strict timestamp parsing
     # -------------------------------------------------------------------------
-    def test_21_repeated_execution_determinism(self):
+    def test_20_timestamp_parsing_robustness(self):
+        # Valid ISO and naive datetimes parse correctly and normalize to UTC
+        dt_utc = to_dt("2026-05-01T12:00:00Z")
+        self.assertIsNotNone(dt_utc)
+        self.assertEqual(dt_utc.year, 2026)
+        self.assertEqual(dt_utc.hour, 12)
+
+        dt_naive = to_dt("2026-05-01 12:00:00")
+        self.assertIsNotNone(dt_naive)
+        self.assertEqual(dt_naive.year, 2026)
+
+        dt_offset = to_dt("2026-05-01T14:00:00+02:00")
+        self.assertIsNotNone(dt_offset)
+        self.assertEqual(dt_offset.hour, 12)  # Normalized to UTC 12:00
+
+        # Strict safety: Malformed or missing timestamps return None (never epoch 1970)
+        self.assertIsNone(to_dt("MALFORMED_TIMESTAMP"))
+        self.assertIsNone(to_dt(None))
+        self.assertIsNone(to_dt(""))
+
+    # -------------------------------------------------------------------------
+    # Scenario 21: Cross-process determinism with distinct PYTHONHASHSEED
+    # -------------------------------------------------------------------------
+    def test_21_cross_process_determinism_with_distinct_hash_seeds(self):
+        import subprocess
         v = [{"resource_id": "res_01", "operation": "REPORT_REMAINING_RECORD", "finding_state": "PRESENT", "evidence_id": "ev_1", "category": "USER_PROFILE"}]
         run1 = build_case_output("case_det", "INCOMPLETE", v, [])
         run2 = build_case_output("case_det", "INCOMPLETE", v, [])
         self.assertEqual(json.dumps(run1, sort_keys=True), json.dumps(run2, sort_keys=True))
+
+        # Test cross-process determinism across subprocesses with different PYTHONHASHSEED
+        cmd = [sys.executable, "-c", "import sys; sys.path.insert(0, 'code'); from main import build_case_output, canonical_step_sort_key; import json; v = [{'resource_id': 'res_01', 'operation': 'REPORT_REMAINING_RECORD', 'finding_state': 'PRESENT', 'evidence_id': 'ev_1', 'category': 'USER_PROFILE'}]; print(json.dumps(build_case_output('case_det', 'INCOMPLETE', v, [])))"]
+        env0 = os.environ.copy()
+        env0["PYTHONHASHSEED"] = "0"
+        proc0 = subprocess.run(cmd, cwd=BASE_DIR, env=env0, capture_output=True, text=True, check=True)
+
+        env42 = os.environ.copy()
+        env42["PYTHONHASHSEED"] = "42"
+        proc42 = subprocess.run(cmd, cwd=BASE_DIR, env=env42, capture_output=True, text=True, check=True)
+
+        self.assertEqual(proc0.stdout.strip(), proc42.stdout.strip())
 
     # -------------------------------------------------------------------------
     # Scenario 22: Data coverage gaps prevent unsupported COMPLETE
@@ -396,35 +484,103 @@ class TestAuditEngineRegression(unittest.TestCase):
         self.assertEqual(status, "INCOMPLETE")
 
     # -------------------------------------------------------------------------
-    # Scenario 23: Valid fully evidenced case achieves COMPLETE
+    # Scenario 23: Genuine evidence file verification achieves COMPLETE; missing fails
     # -------------------------------------------------------------------------
     def test_23_valid_fully_evidenced_case_achieves_complete(self):
-        id_graph = IdentityGraph([{"user_id": "u_23", "email": "u23@test.com", "email_hash": "h23", "phone": "+23"}], [])
-        manifest = [{"file_id": "ev_datastore", "file_path": "profiles.sql", "origin": "account_db", "captured_at": "2026-04-20T00:00:00Z"}]
-        catalog = EvidenceCatalog(manifest)
-        catalog.account_datastore_files.add("ev_datastore")
-        case_data = {
-            "case_id": "c23", "email": "u23@test.com", "requested_at": "2026-04-01T00:00:00Z",
-            "reported_status": "COMPLETE", "reported_at": "2026-04-21T00:00:00Z", "audit_at": "2026-05-01T00:00:00Z",
-            "request_text": "Please delete my user account and all profile data."
+        import tempfile
+        # 1. Create a genuine physical JSON evidence fixture demonstrating verified profile absence
+        fixture_data = {
+            "service_exports": {
+                "account_service": {
+                    "profile_lookups": [
+                        {
+                            "resource_id": "account_23",
+                            "user_id": "u_23",
+                            "email": "u23@test.com",
+                            "status_code": 404,
+                            "profile": None
+                        }
+                    ]
+                }
+            }
         }
-        status, steps = audit_case(case_data, id_graph, catalog, {"u_23": {"account_23"}}, [])
-        self.assertEqual(status, "COMPLETE")
-        self.assertTrue(len(steps) > 0)
-        self.assertEqual(steps[0]["evidence_id"], "ev_datastore")
-        self.assertEqual(steps[0]["operation"], "VERIFY_RECORD_ABSENT")
+        with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False, encoding="utf-8") as tf:
+            json.dump(fixture_data, tf)
+            fixture_path = tf.name
+
+        try:
+            id_graph = IdentityGraph([{"user_id": "u_23", "email": "u23@test.com", "email_hash": "h23", "phone": "+23"}], [])
+            manifest = [{"file_id": "ev_real_proof", "file_path": fixture_path, "origin": "account_service", "captured_at": "2026-04-20T00:00:00Z"}]
+            catalog = EvidenceCatalog(manifest)
+            catalog.parse_all()
+
+            case_data = {
+                "case_id": "c23", "email": "u23@test.com", "requested_at": "2026-04-01T00:00:00Z",
+                "reported_status": "COMPLETE", "reported_at": "2026-04-21T00:00:00Z", "audit_at": "2026-05-01T00:00:00Z",
+                "request_text": "Please delete my user account and all profile data."
+            }
+            status, steps = audit_case(case_data, id_graph, catalog, {"u_23": {"account_23"}}, [])
+            self.assertEqual(status, "COMPLETE")
+            self.assertTrue(len(steps) > 0)
+            self.assertEqual(steps[0]["evidence_id"], "ev_real_proof")
+            self.assertEqual(steps[0]["operation"], "VERIFY_RECORD_ABSENT")
+        finally:
+            if os.path.exists(fixture_path):
+                os.remove(fixture_path)
+
+        # 2. Negative test: If the evidence file is missing/unreadable, audit_case cannot claim COMPLETE
+        manifest_missing = [{"file_id": "ev_nonexistent", "file_path": os.path.join(tempfile.gettempdir(), "nonexistent_file_xyz.json"), "origin": "account_service", "captured_at": "2026-04-20T00:00:00Z"}]
+        catalog_missing = EvidenceCatalog(manifest_missing)
+        catalog_missing.parse_all()
+        status_neg, steps_neg = audit_case(case_data, id_graph, catalog_missing, {"u_23": {"account_23"}}, [])
+        self.assertEqual(status_neg, "INCOMPLETE")
 
     # -------------------------------------------------------------------------
-    # Scenario 24: Legitimate retained records (tax invoice / legal hold)
+    # Scenario 24: Legitimate retained records (tax invoice / legal hold) policy path
     # -------------------------------------------------------------------------
     def test_24_legitimate_retained_tax_and_legal_records(self):
-        compliant = [
-            {"resource_id": "tax_invoice_991", "evidence_id": "ev_tax", "category": "TAX_INVOICE"}
+        id_graph = IdentityGraph([{"user_id": "u_24", "email": "u24@test.com", "email_hash": "h24", "phone": "+24"}], [])
+        manifest = [
+            {"file_id": "ev_legal", "file_path": "legal.json", "origin": "legal_service", "captured_at": "2026-04-15T00:00:00Z"},
+            {"file_id": "ev_tax", "file_path": "tax.json", "origin": "security_service", "captured_at": "2026-04-15T00:00:00Z"},
+            {"file_id": "ev_acc", "file_path": "acc.json", "origin": "account_service", "captured_at": "2026-04-15T00:00:00Z"}
         ]
-        steps = build_case_output("c24", "COMPLETE", [], compliant)
-        tax_step = [s for s in steps if s["resource_id"] == "tax_invoice_991"][0]
-        self.assertEqual(tax_step["operation"], "VERIFY_RECORD_PRESENT")
-        self.assertEqual(tax_step["state"], "PRESENT")
+        catalog = EvidenceCatalog(manifest)
+        # Legal hold record retained under Rule 13 (legal_service)
+        catalog.records_by_file["ev_legal"].append({
+            "file_id": "ev_legal", "captured_at": "2026-04-15T00:00:00Z", "resource_id": "legal_hold_5622",
+            "category": "LEGAL_HOLD_RECORD", "user_id": "u_24", "is_present": True, "is_retained": True
+        })
+        # Tax invoice retained under Rule 12 (security_service)
+        catalog.records_by_file["ev_tax"].append({
+            "file_id": "ev_tax", "captured_at": "2026-04-15T00:00:00Z", "resource_id": "tax_invoice_991",
+            "category": "TAX_INVOICE", "user_id": "u_24", "is_present": True, "is_retained": True
+        })
+        # Primary account is confirmed absent
+        catalog.records_by_file["ev_acc"].append({
+            "file_id": "ev_acc", "captured_at": "2026-04-15T00:00:00Z", "resource_id": "account_24",
+            "category": "USER_PROFILE", "user_id": "u_24", "is_present": False, "is_absent": True
+        })
+
+        case_data = {
+            "case_id": "c24", "email": "u24@test.com", "requested_at": "2026-04-01T00:00:00Z",
+            "reported_status": "COMPLETE", "reported_at": "2026-04-16T00:00:00Z", "audit_at": "2026-05-01T00:00:00Z",
+            "request_text": "Please delete my account and personal data."
+        }
+        status, steps = audit_case(case_data, id_graph, catalog, {"u_24": {"account_24", "legal_hold_5622", "tax_invoice_991"}}, [])
+        self.assertEqual(status, "COMPLETE")
+
+        legal_steps = [s for s in steps if s["resource_id"] == "legal_hold_5622"]
+        self.assertTrue(len(legal_steps) > 0)
+        self.assertEqual(legal_steps[0]["system_id"], "legal_service")
+        self.assertEqual(legal_steps[0]["operation"], "VERIFY_RECORD_PRESENT")
+        self.assertEqual(legal_steps[0]["state"], "PRESENT")
+
+        tax_steps = [s for s in steps if s["resource_id"] == "tax_invoice_991"]
+        self.assertTrue(len(tax_steps) > 0)
+        self.assertEqual(tax_steps[0]["system_id"], "security_service")
+        self.assertEqual(tax_steps[0]["operation"], "VERIFY_RECORD_PRESENT")
+        self.assertEqual(tax_steps[0]["state"], "PRESENT")
 
     # -------------------------------------------------------------------------
     # Scenario 25: Intent and identity multilingual edge cases
@@ -616,6 +772,120 @@ class TestAuditEngineRegression(unittest.TestCase):
         }]
         is_valid, issues = validate_contract(good_comp_rows, expected_row_count=1, valid_file_ids=valid_files)
         self.assertTrue(is_valid, f"Unexpected contract issues: {issues}")
+
+    # -------------------------------------------------------------------------
+    # Scenario 31: Independent replica isolation (same table name, distinct origins)
+    # -------------------------------------------------------------------------
+    def test_31_independent_replica_isolation(self):
+        id_graph = IdentityGraph([{"user_id": "u_31", "email": "u31@test.com", "email_hash": "h31", "phone": "+31"}], [])
+        manifest = [
+            {"file_id": "ev_prim", "file_path": "prim.sql", "origin": "db_primary", "captured_at": "2026-04-10T00:00:00Z"},
+            {"file_id": "ev_repl", "file_path": "repl.sql", "origin": "db_replica", "captured_at": "2026-04-12T00:00:00Z"}
+        ]
+        catalog = EvidenceCatalog(manifest)
+        # Primary is absent
+        catalog.records_by_file["ev_prim"].append({
+            "file_id": "ev_prim", "captured_at": "2026-04-10T00:00:00Z", "resource_id": "account_31",
+            "category": "USER_PROFILE", "user_id": "u_31", "is_present": False, "is_absent": True,
+            "has_pii": False, "table": "customer_profiles"
+        })
+        # Replica snapshot still has the record present with the same table name
+        catalog.records_by_file["ev_repl"].append({
+            "file_id": "ev_repl", "captured_at": "2026-04-12T00:00:00Z", "resource_id": "account_31",
+            "category": "USER_PROFILE", "user_id": "u_31", "is_present": True, "is_absent": False,
+            "has_pii": True, "table": "customer_profiles"
+        })
+
+        case_data = {
+            "case_id": "c31", "email": "u31@test.com", "requested_at": "2026-04-05T00:00:00Z",
+            "reported_status": "COMPLETE", "reported_at": "2026-04-15T00:00:00Z", "audit_at": "2026-05-01T00:00:00Z",
+            "request_text": "Please delete my account."
+        }
+        status, steps = audit_case(case_data, id_graph, catalog, {"u_31": {"account_31"}}, [])
+        self.assertEqual(status, "INCOMPLETE")
+        findings = [s for s in steps if s["phase"] == "FINDING" and s["operation"] == "REPORT_REMAINING_RECORD"]
+        self.assertTrue(len(findings) > 0)
+        self.assertEqual(findings[0]["evidence_id"], "ev_repl")
+
+    # -------------------------------------------------------------------------
+    # Scenario 32: Multi-subject trace isolation in logs
+    # -------------------------------------------------------------------------
+    def test_32_multi_subject_trace_isolation(self):
+        import tempfile
+        log_content = (
+            '{"timestamp": "2026-04-10T10:00:00Z", "trace_id": "tr-shared-1", "user_id": "user_alpha", "email": "alpha@test.com"}\n'
+            '{"timestamp": "2026-04-10T10:01:00Z", "trace_id": "tr-shared-1", "user_id": "user_beta", "email": "beta@test.com"}\n'
+            '{"timestamp": "2026-04-10T10:02:00Z", "trace_id": "tr-shared-1", "resource_id": "account_alpha"}\n'
+        )
+        with tempfile.NamedTemporaryFile("w+", suffix=".log", delete=False, encoding="utf-8") as tf:
+            tf.write(log_content)
+            log_path = tf.name
+
+        try:
+            id_graph = IdentityGraph(
+                [{"user_id": "user_alpha", "email": "alpha@test.com"}, {"user_id": "user_beta", "email": "beta@test.com"}],
+                []
+            )
+            manifest = [{"file_id": "ev_log_shared", "file_path": log_path, "origin": "service_events", "captured_at": "2026-04-15T00:00:00Z"}]
+            catalog = EvidenceCatalog(manifest)
+            catalog.id_graph = id_graph
+            catalog.parse_all()
+
+            # Confirm that user_beta was NOT associated with account_alpha
+            beta_records = [r for r in catalog.records_by_file["ev_log_shared"] if r.get("user_id") == "user_beta" and r.get("resource_id") == "account_alpha"]
+            self.assertEqual(len(beta_records), 0)
+        finally:
+            if os.path.exists(log_path):
+                os.remove(log_path)
+
+    # -------------------------------------------------------------------------
+    # Scenario 33: Future identity change after audit_at is ignored
+    # -------------------------------------------------------------------------
+    def test_33_future_identity_change_ignored(self):
+        from datetime import timezone
+        # Current snapshot is updated in the future
+        identities = [{"user_id": "user_33", "email": "new_33@test.com", "updated_at": "2026-06-01T00:00:00Z"}]
+        # Audit log change happens after audit_at (2026-05-01)
+        audit_log = [{"user_id": "user_33", "field_name": "email", "old_value": "old_33@test.com", "new_value": "new_33@test.com", "changed_at": "2026-06-01T00:00:00Z"}]
+        id_graph = IdentityGraph(identities, audit_log)
+
+        cutoff = datetime(2026, 5, 1, 0, 0, 0, tzinfo=timezone.utc)
+        # At cutoff, new_33@test.com was not known/valid
+        resolved = id_graph.resolve_user_id("new_33@test.com", at_time=cutoff)
+        self.assertIsNone(resolved)
+        # But old_33@test.com was valid
+        resolved_old = id_graph.resolve_user_id("old_33@test.com", at_time=cutoff)
+        self.assertEqual(resolved_old, "user_33")
+
+    # -------------------------------------------------------------------------
+    # Scenario 34: Within-phase contract ordering enforced by evaluator
+    # -------------------------------------------------------------------------
+    def test_34_within_phase_contract_ordering(self):
+        # FINDING phase out-of-order: REPORT_ACTIVE_DATA_FLOW (op_num 3) before REPORT_REMAINING_RECORD (op_num 1)
+        bad_order_steps = [
+            {"step_no": 1, "phase": "FINDING", "system_id": "s1", "resource_id": "r1", "operation": "REPORT_ACTIVE_DATA_FLOW", "state": "ACTIVE", "evidence_id": "evidence_01"},
+            {"step_no": 2, "phase": "FINDING", "system_id": "s1", "resource_id": "r2", "operation": "REPORT_REMAINING_RECORD", "state": "PRESENT", "evidence_id": "evidence_01"},
+            {"step_no": 3, "phase": "REMEDIATION", "system_id": "s1", "resource_id": "r1", "operation": "DISABLE_DATA_FLOW", "state": "DISABLED", "evidence_id": ""},
+            {"step_no": 4, "phase": "VERIFICATION", "system_id": "s1", "resource_id": "r1", "operation": "VERIFY_DATA_FLOW_DISABLED", "state": "DISABLED", "evidence_id": ""},
+        ]
+        row = [{"case_id": "c34", "deletion_status": "INCOMPLETE", "steps_json": json.dumps(bad_order_steps)}]
+        is_valid, issues = validate_contract(row, expected_row_count=1, valid_file_ids={"evidence_01"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("violates contract order" in iss for iss in issues))
+
+    # -------------------------------------------------------------------------
+    # Scenario 35: Missing evidence cannot prove absence
+    # -------------------------------------------------------------------------
+    def test_35_missing_evidence_cannot_prove_absence(self):
+        id_graph = IdentityGraph([{"user_id": "u_35", "email": "u35@test.com"}], [])
+        catalog = EvidenceCatalog([])
+        case_data = {
+            "case_id": "c35", "email": "u35@test.com", "requested_at": "2026-04-01T00:00:00Z",
+            "reported_status": "COMPLETE", "reported_at": "2026-04-10T00:00:00Z", "audit_at": "2026-05-01T00:00:00Z",
+            "request_text": "Please delete my account."
+        }
+        status, steps = audit_case(case_data, id_graph, catalog, {"u_35": {"account_35"}}, [])
+        self.assertEqual(status, "INCOMPLETE")
 
 
 if __name__ == "__main__":

@@ -38,9 +38,9 @@ Measured on a standard workstation environment across all 518 evaluation cases:
 | Metric | Measurement |
 |---|---|
 | **Total Evaluation Requests Processed** | 518 cases |
-| **Multi-Modal Evidence Files Parsed** | 100 manifest files (2,915 evidence observations) |
-| **Total Pipeline Wall-Clock Runtime** | ~1.85 seconds |
-| **Throughput** | ~280 cases / second |
+| **Multi-Modal Evidence Files Parsed** | 94 manifest files (2,923 evidence observations) |
+| **Total Pipeline Wall-Clock Runtime** | ~1.65 seconds |
+| **Throughput** | ~310 cases / second |
 | **Memory Footprint (Peak RAM)** | ~48 MB |
 | **Determinism** | 100% deterministic (zero stochastic drift across repeated runs) |
 

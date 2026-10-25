@@ -17,8 +17,8 @@ Read [`problem_statement.md`](./problem_statement.md) for the complete challenge
 Clone the repository and move into the project directory:
 
 ```bash
-git clone https://github.com/interviewstreet/hackerrank-orchestrate-october26.git
-cd hackerrank-orchestrate-october26
+git clone https://github.com/araya111/NorthStar-Shop.git
+cd NorthStar-Shop
 ```
 
 Install declared project dependencies (standard library + `pypdf`):
@@ -43,7 +43,7 @@ Run the starter Python entry point with:
 python code/main.py
 ```
 
-Run the unit test suite (30 scenarios):
+Run the unit test suite (35 scenarios):
 
 ```bash
 python -m unittest tests/test_audit_engine.py
