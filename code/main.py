@@ -24,22 +24,36 @@ DATASET_DIR = os.path.join(BASE_DIR, "dataset")
 DEFAULT_OUTPUT_PATH = os.path.join(BASE_DIR, "output.csv")
 
 
-def load_csv(rel_path):
-    fpath = os.path.join(DATASET_DIR, rel_path)
+def load_csv(rel_path, dataset_dir=DATASET_DIR):
+    fpath = rel_path if os.path.isabs(rel_path) else os.path.join(dataset_dir, rel_path)
     with open(fpath, encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
 
 
-def to_dt(s):
+def is_valid_date(s):
     if not s or not isinstance(s, str):
-        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return False
+    try:
+        datetime.fromisoformat(s.replace('Z', '+00:00'))
+        return True
+    except Exception:
+        try:
+            datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+            return True
+        except Exception:
+            return False
+
+
+def to_dt(s, default=datetime(1970, 1, 1, tzinfo=timezone.utc)):
+    if not s or not isinstance(s, str):
+        return default
     try:
         return datetime.fromisoformat(s.replace('Z', '+00:00'))
     except Exception:
         try:
             return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except Exception:
-            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+            return default
 
 
 # ── 1. Identity Resolution & Historical Graph ─────────────────────────────────
@@ -52,6 +66,8 @@ class IdentityGraph:
         self.uid_to_emails = defaultdict(set)
         self.uid_to_hashes = defaultdict(set)
         self.hash_to_uid = {}
+        self.phone_to_uid = {}
+        self.uid_to_phones = defaultdict(set)
         self.uid_to_record = {}
         self.ambiguous_identifiers = set()
 
@@ -81,6 +97,16 @@ class IdentityGraph:
                 self.hash_to_uid[calc_h] = uid
             self.uid_to_hashes[uid].add(calc_h)
 
+            ph = u.get("phone", "").strip()
+            if ph:
+                norm_ph = re.sub(r'[\s\-().+]', '', ph)
+                for p_val in (ph, norm_ph):
+                    if p_val in self.phone_to_uid and self.phone_to_uid[p_val] != uid:
+                        self.ambiguous_identifiers.add(p_val)
+                    else:
+                        self.phone_to_uid[p_val] = uid
+                self.uid_to_phones[uid].add(ph)
+
         # Historical audit log changes
         for entry in audit_log:
             uid = entry["user_id"]
@@ -109,18 +135,35 @@ class IdentityGraph:
                             self.ambiguous_identifiers.add(h)
                         else:
                             self.hash_to_uid[h] = uid
+            elif field == "phone":
+                for val in [entry.get("old_value"), entry.get("new_value")]:
+                    if val:
+                        ph = val.strip()
+                        norm_ph = re.sub(r'[\s\-().+]', '', ph)
+                        self.uid_to_phones[uid].add(ph)
+                        for p_val in (ph, norm_ph):
+                            if p_val in self.phone_to_uid and self.phone_to_uid[p_val] != uid:
+                                self.ambiguous_identifiers.add(p_val)
+                            else:
+                                self.phone_to_uid[p_val] = uid
 
     def resolve_user_id(self, identifier):
         if not identifier:
             return None
-        ident = str(identifier).strip().lower()
-        if ident in self.ambiguous_identifiers:
+        raw_ident = str(identifier).strip()
+        ident = raw_ident.lower()
+        if ident in self.ambiguous_identifiers or raw_ident in self.ambiguous_identifiers:
             return None
         if ident.startswith("user_"):
             return ident
         if len(ident) == 64 and ident in self.hash_to_uid:
             return self.hash_to_uid[ident]
-        return self.email_to_uid.get(ident)
+        if ident in self.email_to_uid:
+            return self.email_to_uid[ident]
+        norm_ph = re.sub(r'[\s\-().+]', '', raw_ident)
+        if norm_ph in self.phone_to_uid:
+            return self.phone_to_uid[norm_ph]
+        return self.phone_to_uid.get(raw_ident)
 
     def get_emails(self, user_id):
         return self.uid_to_emails.get(user_id, set())
@@ -134,12 +177,13 @@ class IdentityGraph:
 class EvidenceCatalog:
     """Parses SQL snapshots, structured JSON exports, trace logs, TXT documents, PDFs, and PNG artifacts."""
 
-    def __init__(self, manifest, id_graph=None, activities=None):
+    def __init__(self, manifest, id_graph=None, activities=None, dataset_dir=DATASET_DIR):
         self.manifest_dict = {r["file_id"]: r for r in manifest}
         self.records_by_file = defaultdict(list)
         self.account_datastore_files = set()
         self.id_graph = id_graph
         self.activities = activities or []
+        self.dataset_dir = dataset_dir
         self._parse_all(manifest)
 
     def _parse_all(self, manifest):
@@ -147,7 +191,9 @@ class EvidenceCatalog:
         link_events_by_time = []
         for a in self.activities:
             if a.get("event_type") == "LINK_RESOURCE_IDENTITY":
-                t = to_dt(a["event_time"])
+                if not is_valid_date(a.get("event_time")):
+                    continue
+                t = to_dt(a.get("event_time"))
                 det = a.get("details", "")
                 m_u = re.findall(r'user_\d+', det)
                 m_e = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', det)
@@ -158,9 +204,9 @@ class EvidenceCatalog:
         for ev in manifest:
             fid = ev["file_id"]
             rel_path = ev["file_path"]
-            fpath = os.path.join(DATASET_DIR, rel_path)
+            fpath = rel_path if os.path.isabs(rel_path) else os.path.join(self.dataset_dir, rel_path)
             cap_at = ev["captured_at"]
-            if not os.path.exists(fpath):
+            if not is_valid_date(cap_at) or not os.path.exists(fpath):
                 continue
 
             ext = os.path.splitext(fpath)[1].lower()
@@ -237,20 +283,23 @@ class EvidenceCatalog:
                                row_dict.get("subject_reference") or embedded.get("user_id") or 
                                embedded.get("customer_reference") or embedded.get("subject_reference") or
                                (embedded.get("document") or {}).get("customer_reference"))
-                        if not uid and em and self.id_graph:
-                            uid = self.id_graph.resolve_user_id(em)
-
                         phone = (row_dict.get("phone") or embedded.get("phone") or 
                                  row_dict.get("requester_phone") or embedded.get("requester_phone"))
+                        if not uid and em and self.id_graph:
+                            uid = self.id_graph.resolve_user_id(em)
+                        if not uid and phone and self.id_graph:
+                            uid = self.id_graph.resolve_user_id(phone)
                         full_name = (row_dict.get("full_name") or embedded.get("full_name") or 
                                      embedded.get("display_name") or row_dict.get("requester_name"))
+                        first_name = row_dict.get("first_name") or embedded.get("first_name")
+                        last_name = row_dict.get("last_name") or embedded.get("last_name")
                         email_hash = row_dict.get("email_hash") or embedded.get("email_hash")
 
                         res_allowed = row_dict.get("restore_allowed", embedded.get("restore_allowed"))
                         is_restore = (res_allowed in (1, "1", True))
                         enabled = row_dict.get("enabled", embedded.get("enabled"))
                         is_enabled = (enabled in (1, "1", "ACTIVE", True))
-                        has_pii = bool(em or phone or full_name or email_hash)
+                        has_pii = bool(em or phone or full_name or email_hash or first_name or last_name)
 
                         self.records_by_file[fid].append({
                             "file_id": fid, "captured_at": cap_at, "resource_id": rid,
@@ -479,7 +528,9 @@ class EvidenceCatalog:
 
                 rows = kvs.get("rows")
                 http_status = kvs.get("http_status")
-                is_absent = (rows in (0, "0") or http_status in (404, "404"))
+                total_hits = kvs.get("total_hits")
+                result_str = str(kvs.get("result", "")).lower()
+                is_absent = (rows in (0, "0") or http_status in (404, "404") or total_hits in (0, "0") or result_str in ("miss", "not_found", "empty"))
                 enabled = kvs.get("enabled")
                 is_enabled = (enabled in (True, "true"))
                 res_allowed = kvs.get("restore_allowed") or (kvs.get("eligible") == "true" and kvs.get("deletion_block") == "false")
@@ -584,6 +635,14 @@ def is_authorized_deletion_request(request_text):
 
     # Hypothetical or conditional query check
     if re.search(r'\b(?:if\s+i\s+(?:decide|choose|want|ever)\s+to\s+delete|supposing\s+i\s+delete|in\s+case\s+i\s+delete|hypothetically)\b', text):
+        return False
+
+    # Conditional demand (if you cannot ... then delete)
+    if re.search(r'\bif\s+(?:you|we)\s+(?:cannot|can\'?t|do not|don\'?t)\s+.*?\bthen\s+(?:delete|close|erase)\b', text):
+        return False
+
+    # Cancellation or withdrawal of deletion request
+    if re.search(r'\b(?:cancel (?:that|my|the|this)?\s*request|keep my account|withdraw (?:my|the|this)?\s*request)\b', text):
         return False
 
     # Quoting another person or message without requesting deletion oneself
@@ -830,89 +889,7 @@ def build_case_output(case_id, deletion_status, violations, compliant_resources)
     return steps
 
 
-# ── 5. Main Execution Pipeline ────────────────────────────────────────────────
-
-def run_pipeline(target_csv="deletion_requests.csv", output_csv_path=DEFAULT_OUTPUT_PATH):
-    print("Loading datasets...", file=sys.stderr)
-    requests = load_csv(target_csv)
-    identities = load_csv("user_identities.csv")
-    audit_log = load_csv("user_audit_log.csv")
-    activities = load_csv("system_activity.csv")
-    manifest = load_csv("evidence_files.csv")
-
-    print(f"Loaded {len(requests)} evaluation requests.", file=sys.stderr)
-    print("Building identity graph...", file=sys.stderr)
-    id_graph = IdentityGraph(identities, audit_log)
-
-    print("Parsing multi-modal evidence files...", file=sys.stderr)
-    catalog = EvidenceCatalog(manifest, id_graph, activities)
-    total_obs = sum(len(v) for v in catalog.records_by_file.values())
-    print(f"Extracted {total_obs} evidence observations.", file=sys.stderr)
-
-    # 1. Global user-to-resource graph derived from evidence
-    user_to_resources = defaultdict(set)
-    resource_to_user = {}
-
-    for fid, records in catalog.records_by_file.items():
-        for r in records:
-            rid = r.get("resource_id")
-            uid = r.get("user_id")
-            em = r.get("email")
-            if not uid and em:
-                uid = id_graph.resolve_user_id(em)
-            if rid and uid:
-                user_to_resources[uid].add(rid)
-                resource_to_user[rid] = uid
-
-    # 2. Integrate ground-truth LINK_RESOURCE_IDENTITY events from activity stream
-    for a in activities:
-        if a.get("event_type") == "LINK_RESOURCE_IDENTITY":
-            rid = a["resource_id"]
-            det = a.get("details", "")
-            m_u = re.findall(r'user_\d+', det)
-            m_e = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', det)
-            uid = m_u[0] if m_u else (id_graph.resolve_user_id(m_e[0]) if m_e else None)
-            if uid and rid:
-                user_to_resources[uid].add(rid)
-                resource_to_user[rid] = uid
-
-    # 3. Grounded deletion worker activities within 30 minutes of reported_at
-    worker_acts = [a for a in activities if a.get("source_system") == "deletion_worker"]
-    for req in requests:
-        uid = id_graph.resolve_user_id(req["email"])
-        if not uid: continue
-        rep_time = to_dt(req["reported_at"])
-        for a in worker_acts:
-            t_act = to_dt(a["event_time"])
-            diff = abs((t_act - rep_time).total_seconds())
-            if diff <= 1800:
-                rid = a["resource_id"]
-                user_to_resources[uid].add(rid)
-                resource_to_user[rid] = uid
-
-    # 4. Canonical user account convention: user_X -> account_X or account_00X
-    all_known_accounts = set()
-    for a in activities:
-        if a["resource_id"].startswith("account_"):
-            all_known_accounts.add(a["resource_id"])
-    for fid, records in catalog.records_by_file.items():
-        for r in records:
-            if r["resource_id"].startswith("account_"):
-                all_known_accounts.add(r["resource_id"])
-
-    for u in identities:
-        uid = u["user_id"]
-        m_num = re.search(r'\d+', uid)
-        if m_num:
-            num = int(m_num.group(0))
-            for candidate in [f"account_{num:03d}", f"account_{num}"]:
-                if candidate in all_known_accounts:
-                    user_to_resources[uid].add(candidate)
-                    if candidate not in resource_to_user:
-                        resource_to_user[candidate] = uid
-
-    results = []
-    status_counts = defaultdict(int)
+# ── 5. Case Audit Logic ───────────────────────────────────────────────────────
 
 def audit_case(req, id_graph, catalog, user_to_resources, activities):
     """
@@ -926,7 +903,9 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
     cid = req["case_id"]
     email = req["email"].strip().lower()
     req_text = req.get("request_text", "")
-    aud_time = to_dt(req["audit_at"])
+    aud_time = to_dt(req.get("audit_at"))
+    if not aud_time:
+        aud_time = to_dt(req.get("reported_at")) or to_dt(req.get("requested_at")) or datetime(1970, 1, 1, tzinfo=timezone.utc)
 
     # Step 1: Check request authorization
     if not is_authorized_deletion_request(req_text):
@@ -939,7 +918,10 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
     # Step 2: Gather point-in-time evidence strictly at or before audit_at
     user_obs = []
     for fid, records in catalog.records_by_file.items():
-        cap_time = to_dt(catalog.manifest_dict[fid]["captured_at"])
+        cap_str = catalog.manifest_dict[fid].get("captured_at")
+        if not is_valid_date(cap_str):
+            continue
+        cap_time = to_dt(cap_str)
         if cap_time <= aud_time:
             for r in records:
                 r_em = str(r.get("email") or "").strip().lower()
@@ -987,7 +969,7 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
 
         # Evaluate the latest observation of each source at or before audit_at
         for sk, s_obs in by_source.items():
-            s_latest = sorted(s_obs, key=lambda x: to_dt(x["captured_at"]))[-1]
+            s_latest = sorted(s_obs, key=lambda x: to_dt(x.get("captured_at")) or datetime(1970, 1, 1, tzinfo=timezone.utc))[-1]
             r_cat = s_latest.get("category") or cat
             is_del_cat = (r_cat in ("USER_PROFILE", "SECONDARY_IDENTIFIER", "SEARCH_INDEX_ENTRY", "CACHE_ENTRY", "SUPPORT_ATTACHMENT", "USER_EXPORT", "MARKETING_PROFILE", "ACCOUNT_DATABASE"))
             is_red_cat = (r_cat in ("SUPPORT_MESSAGE", "EMAIL_DELIVERY_LOG", "ACCOUNT_TOMBSTONE"))
@@ -1038,8 +1020,9 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
 
     pred_status = "INCOMPLETE" if violations else "COMPLETE"
 
-    # If primary account not yet in lists, find evidence of its absence via resource-aware datastore resolution
-    if primary_acc and not any(r["resource_id"] == primary_acc for r in compliant + violations):
+    # If no account resource is in compliant or violations, find evidence of primary account absence
+    has_account = any(r["resource_id"].startswith("account_") for r in compliant + violations)
+    if not has_account and primary_acc:
         ev_proof = ""
         # 1. Direct explicit absent/404 lookup in parsed records
         for fid, records in catalog.records_by_file.items():
@@ -1073,20 +1056,20 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
     return pred_status, steps
 
 
-def run_pipeline(target_csv="deletion_requests.csv", output_csv_path=DEFAULT_OUTPUT_PATH):
+def run_pipeline(target_csv="deletion_requests.csv", output_csv_path=DEFAULT_OUTPUT_PATH, dataset_dir=DATASET_DIR):
     print("Loading datasets...", file=sys.stderr)
-    requests = load_csv(target_csv)
-    identities = load_csv("user_identities.csv")
-    audit_log = load_csv("user_audit_log.csv")
-    activities = load_csv("system_activity.csv")
-    manifest = load_csv("evidence_files.csv")
+    requests = load_csv(target_csv, dataset_dir=dataset_dir)
+    identities = load_csv("user_identities.csv", dataset_dir=dataset_dir)
+    audit_log = load_csv("user_audit_log.csv", dataset_dir=dataset_dir)
+    activities = load_csv("system_activity.csv", dataset_dir=dataset_dir)
+    manifest = load_csv("evidence_files.csv", dataset_dir=dataset_dir)
 
     print(f"Loaded {len(requests)} evaluation requests.", file=sys.stderr)
     print("Building identity graph...", file=sys.stderr)
     id_graph = IdentityGraph(identities, audit_log)
 
     print("Parsing multi-modal evidence files...", file=sys.stderr)
-    catalog = EvidenceCatalog(manifest, id_graph, activities)
+    catalog = EvidenceCatalog(manifest, id_graph, activities, dataset_dir=dataset_dir)
     total_obs = sum(len(v) for v in catalog.records_by_file.values())
     print(f"Extracted {total_obs} evidence observations.", file=sys.stderr)
 
@@ -1117,40 +1100,16 @@ def run_pipeline(target_csv="deletion_requests.csv", output_csv_path=DEFAULT_OUT
                 user_to_resources[uid].add(rid)
                 resource_to_user[rid] = uid
 
-    # 3. Grounded deletion worker activities within 30 minutes of reported_at
-    worker_acts = [a for a in activities if a.get("source_system") == "deletion_worker"]
-    for req in requests:
-        uid = id_graph.resolve_user_id(req["email"])
-        if not uid: continue
-        rep_time = to_dt(req["reported_at"])
-        for a in worker_acts:
-            t_act = to_dt(a["event_time"])
-            diff = abs((t_act - rep_time).total_seconds())
-            if diff <= 1800:
-                rid = a["resource_id"]
-                user_to_resources[uid].add(rid)
-                resource_to_user[rid] = uid
-
-    # 4. Canonical user account convention: user_X -> account_X or account_00X
-    all_known_accounts = set()
-    for a in activities:
-        if a["resource_id"].startswith("account_"):
-            all_known_accounts.add(a["resource_id"])
-    for fid, records in catalog.records_by_file.items():
-        for r in records:
-            if r["resource_id"].startswith("account_"):
-                all_known_accounts.add(r["resource_id"])
-
+    # 3. Canonical user account convention: user_X -> account_00X or account_X
     for u in identities:
         uid = u["user_id"]
         m_num = re.search(r'\d+', uid)
         if m_num:
             num = int(m_num.group(0))
-            for candidate in [f"account_{num:03d}", f"account_{num}"]:
-                if candidate in all_known_accounts:
-                    user_to_resources[uid].add(candidate)
-                    if candidate not in resource_to_user:
-                        resource_to_user[candidate] = uid
+            candidate = f"account_{num:03d}" if num < 1000 else f"account_{num}"
+            user_to_resources[uid].add(candidate)
+            if candidate not in resource_to_user:
+                resource_to_user[candidate] = uid
 
     results = []
     status_counts = defaultdict(int)

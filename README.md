@@ -37,7 +37,7 @@ Run the starter Python entry point with:
 python code/main.py
 ```
 
-Run the automated release gate to verify all 8 critical gates in one command:
+Run the automated release gate to verify all 9 critical gates in one command:
 
 ```bash
 python code/evaluation/main.py --release-gate

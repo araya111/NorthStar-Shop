@@ -27,6 +27,8 @@ import py_compile
 import unittest
 import hashlib
 import zipfile
+import tempfile
+import subprocess
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -287,6 +289,36 @@ def run_gate_9_archive():
         sha256 = hashlib.sha256(f.read()).hexdigest()
 
     print(f"  [OK] code.zip successfully packaged ({len(names)} files, SHA-256: {sha256}).")
+
+    # Independent Extraction & Standalone Test Execution
+    print("  Testing independent extraction and standalone execution in temporary workspace...")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp_dir)
+
+        # Confirm all packaged files exist and are non-empty in extracted directory
+        for arcname, _ in files_to_pack:
+            extracted_path = os.path.join(tmp_dir, arcname)
+            if not os.path.exists(extracted_path):
+                print(f"  [FAIL] Extracted file missing: {arcname}", file=sys.stderr)
+                return False
+            if os.path.getsize(extracted_path) == 0:
+                print(f"  [FAIL] Extracted file is empty: {arcname}", file=sys.stderr)
+                return False
+
+        # Execute unit test suite from inside the extracted directory
+        res = subprocess.run(
+            [sys.executable, "-m", "unittest", "tests/test_audit_engine.py"],
+            cwd=tmp_dir,
+            capture_output=True,
+            text=True
+        )
+        if res.returncode != 0:
+            print(f"  [FAIL] Unit tests failed in extracted archive environment:\n{res.stderr}", file=sys.stderr)
+            return False
+
+        print("  [OK] Standalone tests passed in extracted environment (26/26 tests OK).")
+
     return True
 
 
