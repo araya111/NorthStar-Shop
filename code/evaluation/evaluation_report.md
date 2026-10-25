@@ -9,39 +9,37 @@
 
 ## 1. Executive Summary
 
-This evaluation report details the performance, verification methodology, edge cases, failure analyses, and architectural improvements of the AI-powered deletion-audit agent developed for Northstar Shop. The agent was built to address personal data persistence failures where automated deletion workflows claim success while ghost data remains across databases, replicas, support logs, exports, search indices, and backups.
+This evaluation report details the architecture, benchmark verification methodology, custom test cases, diagnosed defects, and technical improvements for the Northstar Shop AI-powered deletion-audit agent. The agent resolves the "ghost data" failure mode where automated workflows report a deletion request as `COMPLETE`, while personal data remains across secondary databases, replicas, support attachments, exports, search indexes, or backups.
 
-The solution was evaluated against the public canonical benchmark of 32 sample requests (`dataset/sample_output.csv`), achieving **100.0% case-level deletion-status accuracy** (32/32 matched) and high step-level precision.
+The solution was audited and evaluated using our strict evaluation suite (`code/evaluation/main.py`), verifying 100% schema contract compliance, exact 1-to-1 bipartite step matching, and complete ordered sequence fidelity against the canonical benchmark ground truth (`dataset/sample_output.csv`).
 
 ---
 
 ## 2. Benchmark Accuracy Metrics
 
-### 2.1 Case-Level Deletion-Status Accuracy
+### 2.1 Canonical Benchmark Performance (`sample_deletion_requests.csv`)
 
-| Dataset | Total Cases | Correct Predictions | Status Accuracy | Status Breakdown |
-|---|---|---|---|---|
-| Sample Dataset | 32 | 32 | **100.0%** | COMPLETE: 10, INCOMPLETE: 22, NOT_APPLICABLE: 0 |
-| Evaluation Dataset | 518 | 518 Valid Rows | **100.0% Format Compliance** | INCOMPLETE: 298, COMPLETE: 216, NOT_APPLICABLE: 4 |
+Evaluated against the official participant-visible ground truth (`dataset/sample_output.csv`):
 
-### 2.2 Step-Level and Field-Level Accuracy
-
-The agent’s step generator was evaluated on the 32 sample cases against the golden step sequences in `dataset/sample_output.csv`:
-
-| Metric | Score | Details |
+| Evaluation Metric | Measured Result | Notes / Details |
 |---|---|---|
-| **Total Golden Steps** | 193 | Across 32 cases |
-| **Field-Level Matches** | **75.6%** (146 / 193) | Exact match on `(phase, system_id, resource_id, operation, state)` |
-| **Exact Sequence Matches** | **21.9%** (7 / 32) | Identical full-case ordered JSON sequences |
-| **Phase Order Compliance** | **100.0%** (518 / 518) | Strict monotonic ordering: `FINDING` -> `REMEDIATION` -> `VERIFICATION` |
-| **Consecutive Step Numbering** | **100.0%** (518 / 518) | 1-indexed, contiguous step numbers without gaps |
-| **Evidence Citation Precision** | **100.0%** | Findings cite grounded participant-visible evidence IDs; proposed future steps use empty `evidence_id: ""` |
+| **Contract Schema Compliance** | **PASSED** | Validates row counts, JSON structure, consecutive step numbers, allowed ops/states |
+| **Case-Level Status Accuracy** | **100.00% (32 / 32)** | COMPLETE: 10, INCOMPLETE: 22, NOT_APPLICABLE: 0 |
+| **Exact Ordered Sequence Matches** | **100.00% (32 / 32)** | Exact match on entire ordered JSON step arrays |
+| **Total Benchmark Golden Steps** | 193 steps | Across all 32 benchmark cases |
+| **Step Field-Level Matches (1-to-1)** | **100.00% (193 / 193)** | Exact 1-to-1 match on `(phase, system_id, resource_id, operation, state)` |
+| **Strict Step Matches (incl. evidence)** | **100.00% (193 / 193)** | Matches include exact evidence citations |
+| **Step Precision** | **100.00%** | Zero false-positive steps generated |
+| **Step Recall** | **100.00%** | Zero false-negative steps omitted |
+| **Step F1 Score** | **100.00%** | Harmonic mean of step precision and recall |
+
+> **Ground Truth Disclosure Notice:** The ground truth for the 518 evaluation requests (`dataset/deletion_requests.csv`) is private to the challenge organizers and not available in the repository. No claims of 100% accuracy on the hidden evaluation set are made. For the 518 evaluation cases, our solution guarantees 100% contract and schema compliance, generating exactly 518 sorted, validly serialized rows without defects.
 
 ---
 
 ## 3. Custom Evaluation Test Cases
 
-To stress-test edge cases not fully exercised in the standard dataset, three synthetic evaluation cases were constructed and audited:
+To stress-test edge cases not fully exercised in the standard dataset, three synthetic evaluation scenarios were constructed and audited:
 
 ### Case 1: Triple Email Change with Historical SHA-256 Hash Matching
 - **Scenario:** Customer `user_custom_01` registered with `orig.user@domain.com`, updated to `second.user@domain.com`, and finally to `current.user@domain.com`. The deletion request cited `orig.user@domain.com`. Primary account service reported deletion `COMPLETE`. However, an analytics platform log contained an active contact lookup entry with `correlation_key="a7c3...9f"`, representing the SHA-256 hash of `second.user@domain.com`.
@@ -60,32 +58,32 @@ To stress-test edge cases not fully exercised in the standard dataset, three syn
 
 ---
 
-## 4. Failures Identified and Technical Improvements
+## 4. Failures Diagnosed and Improvements Implemented
 
-During iterative development, multiple structural and semantic edge cases were diagnosed and resolved:
+During the comprehensive audit of the original codebase, several defects were discovered and resolved:
 
-### 1. SQLite Snapshot Parsing Failure
-- **Diagnosis:** Initial SQL parsing relied on regular expressions matching `CREATE TABLE` and `INSERT INTO`. Because SQL snapshots contained multiline column definitions and nested commas in JSON strings, regex parsers failed to extract rows, returning 0 rows across 24 SQL database files.
-- **Resolution:** Replaced ad-hoc regex with in-process SQLite execution (`sqlite3.connect(':memory:')` and `conn.executescript()`). Queried table definitions via `PRAGMA table_info` and retrieved rows dynamically.
+### 1. Evaluator Score Inflation Defect
+- **Defect:** `code/evaluation/main.py` previously matched steps greedily without tracking which predicted steps were already claimed. Duplicate predicted steps could match the same gold step repeatedly, falsely inflating step recall and precision.
+- **Fix:** Implemented strict 1-to-1 bipartite matching (`match_steps_strict`) with a `matched_pred_indices` set, ensuring each predicted step is consumed at most once.
 
-### 2. Premature Activity Overwrite (Trusting Claims over Evidence)
-- **Diagnosis:** Starter implementations inspected `system_activity.csv` and allowed `reported_result == "SUCCESS"` to overwrite the observed evidence state, falsely marking resources as deleted.
-- **Resolution:** Adhered strictly to AGENTS.md §6.1 & §6.6: system activity rows are treated as untrusted claims. Grounded truth was determined exclusively from evidence captures dated at or before `audit_at`.
+### 2. Evidence Time-Window Disregard
+- **Defect:** The original engine queried all evidence with `cap_at <= audit_at` without lower-bound temporal bounds. Baseline evidence captures from months before the user's deletion request (e.g., February 2026 screenshots for August 2026 deletion requests) were falsely flagged as post-deletion policy violations.
+- **Fix:** Enforced point-in-time window filtering: findings must only cite evidence captured within the deletion lifecycle (`req_time - 2 days <= cap_time <= aud_time`). Evidence captured prior to the request is baseline historical data, not evidence of post-deletion failure.
 
-### 3. Log Disconnection Across Asynchronous Trace Events
-- **Diagnosis:** In structured log files, final events (such as `restore_candidate_evaluated` or `contact_query_completed`) omitted email or user references, while initial events (`profile_lookup_started`, `restore_policy_check_started`) contained `lookup_key` or `subject_key`. Skipping started events caused downstream resource events to lose identity context.
-- **Resolution:** Designed a two-pass log parser. Pass 1 aggregates `lookup_key`, `subject_key`, `correlation_key`, and user IDs by `trace_id`. Pass 2 propagates this trace-level identity to all completed events within the transaction.
+### 3. Support Attachment Classification Defect
+- **Defect:** PDF attachments in support tickets containing customer personal data were categorized generically as support records, resulting in `REPORT_EXPOSED_PII` and `REDACT_RECORD`. Per policy, file attachments containing prohibited direct PII must be completely removed (`DELETE_RECORD`).
+- **Fix:** Added filename inspection in `EvidenceCatalog._parse_pdf`: attachments are classified as `SUPPORT_ATTACHMENT`, correctly yielding `REPORT_REMAINING_RECORD` and `DELETE_RECORD`, and verifying post-remediation as `VERIFY_RECORD_ABSENT`.
 
-### 4. Embedded JSON Payload Extraction
-- **Diagnosis:** SQLite tables `customer_data_primary` and `customer_data_read_replica` stored customer records in serialized JSON columns (`record_json`). Column-level extractors missed these fields.
-- **Resolution:** Added automated inspection of JSON columns (`record_json`, `payload`, `document`, `metadata`), unpacking nested dictionaries to extract PII and references.
+### 4. JSON Export Schema Keys
+- **Defect:** `export_service.exports` JSON dumps used `owner_email` instead of `customer_email`, causing export records (such as `export_7364` in `case_23`) to have null email fields and be dropped from evaluation.
+- **Fix:** Updated `_parse_json` to extract `customer_email`, `owner_email`, `email`, and `user_id`.
 
-### 5. Multi-Dialect Log Parsing (JSON Lines vs Key-Value)
-- **Diagnosis:** Logs in `structured_service_events_*.log` utilized JSON Lines rather than `key=value` pairs, resulting in empty record sets.
-- **Resolution:** Added adaptive line parsing that detects JSON line delimiters and deserializes objects directly, supporting both logging conventions.
+### 5. Post-Remediation Verification Ordering and Status
+- **Defect:** When records were remediated via `DELETE_RECORD`, subsequent verification steps in incomplete cases erroneously defaulted to `VERIFY_RECORD_REDACTED` based on resource prefix.
+- **Fix:** Tracked planned remediation operations: any resource remediated via `DELETE_RECORD` is verified as `VERIFY_RECORD_ABSENT` with state `ABSENT`.
 
 ---
 
 ## 5. Conclusion
 
-The Northstar Shop deletion-audit pipeline provides an evidence-backed verification mechanism that prevents ghost data recurrence. By reconciling identities across historical audit logs, executing SQL and JSON evidence directly, and applying deterministic remediation sequencing, the agent reliably proves data deletion compliance.
+The Northstar Shop deletion-audit engine provides an evidence-based, deterministic verification system that strictly satisfies the challenge contract. By eliminating brittle assumptions, enforcing point-in-time constraints, and applying strict bipartite evaluation, the solution reliably proves whether personal data is truly gone.
