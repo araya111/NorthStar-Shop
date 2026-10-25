@@ -43,13 +43,15 @@ ALLOWED_OPERATIONS = {
 PHASE_ORDER = {"FINDING": 1, "REMEDIATION": 2, "VERIFICATION": 3}
 
 
-def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=None):
+def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=None, expected_case_ids=None):
     """
     Validates output.csv against all challenge contract rules:
     - Row count and ordering
-    - Duplicate case_id check
+    - Duplicate, missing, or unexpected case_id check
     - Allowed statuses (COMPLETE, INCOMPLETE, NOT_APPLICABLE)
+    - Rejection of empty COMPLETE or empty INCOMPLETE step arrays
     - JSON parsing and structure
+    - Strict step dictionary keys and types
     - Consecutive 1-indexed step_no
     - Phase ordering (FINDING -> REMEDIATION -> VERIFICATION)
     - Allowed operations and corresponding states
@@ -68,6 +70,9 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
         issues.append(f"Row count mismatch: expected {expected_row_count}, got {len(reader)}")
 
     seen_cases = set()
+    actual_case_ids = []
+    REQUIRED_STEP_KEYS = {"step_no", "phase", "system_id", "resource_id", "operation", "state", "evidence_id"}
+
     for row_idx, row in enumerate(reader, start=1):
         cid = row.get("case_id", "").strip()
         status = row.get("deletion_status", "").strip()
@@ -80,6 +85,7 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
         if cid in seen_cases:
             issues.append(f"Duplicate case_id found: {cid}")
         seen_cases.add(cid)
+        actual_case_ids.append(cid)
 
         if status not in ("COMPLETE", "INCOMPLETE", "NOT_APPLICABLE"):
             issues.append(f"Case {cid}: Invalid deletion_status '{status}'")
@@ -100,6 +106,8 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
             continue
 
         if status == "COMPLETE":
+            if len(steps) == 0:
+                issues.append(f"Case {cid} (COMPLETE): COMPLETE prediction must have at least one verification step proving state, got empty steps")
             for s in steps:
                 if s.get("phase") != "VERIFICATION":
                     issues.append(f"Case {cid} (COMPLETE): contains non-VERIFICATION step phase '{s.get('phase')}'")
@@ -108,8 +116,25 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
                 elif valid_file_ids and s.get("evidence_id") not in valid_file_ids:
                     issues.append(f"Case {cid}: references unknown evidence_id '{s.get('evidence_id')}'")
 
+        if status == "INCOMPLETE":
+            if len(steps) == 0:
+                issues.append(f"Case {cid} (INCOMPLETE): INCOMPLETE prediction must have findings and remediation steps, got empty steps")
+
         current_phase_num = 0
         for expected_step_no, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                issues.append(f"Case {cid}: Step {expected_step_no} is not a JSON object")
+                continue
+
+            step_keys = set(step.keys())
+            if step_keys != REQUIRED_STEP_KEYS:
+                missing_keys = REQUIRED_STEP_KEYS - step_keys
+                extra_keys = step_keys - REQUIRED_STEP_KEYS
+                if missing_keys:
+                    issues.append(f"Case {cid}: Step {expected_step_no} missing keys: {missing_keys}")
+                if extra_keys:
+                    issues.append(f"Case {cid}: Step {expected_step_no} has unexpected keys: {extra_keys}")
+
             s_no = step.get("step_no")
             phase = step.get("phase")
             sys_id = step.get("system_id")
@@ -118,8 +143,14 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
             st = step.get("state")
             ev_id = step.get("evidence_id", "")
 
-            if s_no != expected_step_no:
+            if not isinstance(s_no, int):
+                issues.append(f"Case {cid}: Step number {s_no} must be an integer, got {type(s_no).__name__}")
+            elif s_no != expected_step_no:
                 issues.append(f"Case {cid}: Step number {s_no} is non-consecutive (expected {expected_step_no})")
+
+            for str_field, field_name in [(phase, "phase"), (sys_id, "system_id"), (res_id, "resource_id"), (op, "operation"), (st, "state"), (ev_id, "evidence_id")]:
+                if not isinstance(str_field, str):
+                    issues.append(f"Case {cid}: Field '{field_name}' in step {expected_step_no} must be a string, got {type(str_field).__name__}")
 
             p_num = PHASE_ORDER.get(phase, 99)
             if p_num < current_phase_num:
@@ -149,6 +180,17 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
             elif phase == "VERIFICATION" and status == "INCOMPLETE":
                 if ev_id != "":
                     issues.append(f"Case {cid} (INCOMPLETE): VERIFICATION step {s_no} must have empty evidence_id, got '{ev_id}'")
+
+    if expected_case_ids is not None:
+        if actual_case_ids != expected_case_ids:
+            missing = set(expected_case_ids) - set(actual_case_ids)
+            unexpected = set(actual_case_ids) - set(expected_case_ids)
+            if missing:
+                issues.append(f"Missing required case_ids: {sorted(list(missing))[:5]} (total missing: {len(missing)})")
+            if unexpected:
+                issues.append(f"Unexpected case_ids found: {sorted(list(unexpected))[:5]} (total unexpected: {len(unexpected)})")
+            if not missing and not unexpected:
+                issues.append("Case IDs are not in the required order")
 
     is_valid = len(issues) == 0
     return is_valid, issues
@@ -192,7 +234,11 @@ def evaluate_samples():
     run_pipeline(target_csv=sample_reqs_path, output_csv_path=pred_path)
 
     print("\nValidating contract on predicted sample output...")
-    is_valid, issues = validate_contract(pred_path, expected_row_count=32, valid_file_ids=valid_file_ids)
+    with open(gold_path, "r", encoding="utf-8") as f:
+        gold = list(csv.DictReader(f))
+    expected_case_ids = [r["case_id"] for r in gold]
+
+    is_valid, issues = validate_contract(pred_path, expected_row_count=32, valid_file_ids=valid_file_ids, expected_case_ids=expected_case_ids)
     if not is_valid:
         print(f"FAILED contract validation with {len(issues)} issues:")
         for iss in issues[:10]:
@@ -203,8 +249,6 @@ def evaluate_samples():
         print("PASSED contract validation (32 rows, valid JSON, consecutive steps, valid operations/states/phases).")
 
     print("\nCalculating benchmark evaluation metrics with strict 1-to-1 matching...")
-    with open(gold_path, "r", encoding="utf-8") as f:
-        gold = list(csv.DictReader(f))
     with open(pred_path, "r", encoding="utf-8") as f:
         pred = list(csv.DictReader(f))
 
@@ -288,5 +332,57 @@ def evaluate_samples():
     return is_valid, status_correct, total_cases, exact_seq_matches
 
 
+def validate_file(target_file_path):
+    """Validates an arbitrary output CSV against full contract rules."""
+    manifest_path = os.path.join(BASE_DIR, "dataset", "evidence_files.csv")
+    full_reqs_path = os.path.join(BASE_DIR, "dataset", "deletion_requests.csv")
+
+    valid_file_ids = set()
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            valid_file_ids = {r["file_id"] for r in csv.DictReader(f)}
+
+    expected_cases = None
+    expected_count = None
+    if os.path.exists(full_reqs_path):
+        with open(full_reqs_path, "r", encoding="utf-8") as f:
+            expected_cases = [r["case_id"] for r in csv.DictReader(f)]
+            expected_count = len(expected_cases)
+
+    print(f"Validating contract for '{target_file_path}'...")
+    is_valid, issues = validate_contract(
+        target_file_path, 
+        expected_row_count=expected_count, 
+        valid_file_ids=valid_file_ids,
+        expected_case_ids=expected_cases
+    )
+    if not is_valid:
+        print(f"FAILED validation with {len(issues)} issues:")
+        for iss in issues[:20]:
+            print(f"  - {iss}")
+        if len(issues) > 20:
+            print(f"  ... and {len(issues) - 20} more issues.")
+        return False
+    else:
+        print(f"PASSED contract validation ({expected_count} rows, valid JSON, ordered cases, non-empty steps, valid ops/evidence).")
+        return True
+
+
 if __name__ == "__main__":
-    evaluate_samples()
+    import argparse
+    parser = argparse.ArgumentParser(description="Evaluation & Contract Validation Runner")
+    parser.add_argument("--validate", type=str, default=None, help="Path to CSV file to validate against contract")
+    args = parser.parse_args()
+
+    if args.validate:
+        ok = validate_file(args.validate)
+        if not ok:
+            sys.exit(1)
+        sys.exit(0)
+    else:
+        is_valid, status_correct, total_cases, exact_seq_matches = evaluate_samples()
+        if not is_valid or status_correct != total_cases:
+            print(f"Exiting with status 1 due to validation failure or sub-100% status accuracy ({status_correct}/{total_cases})")
+            sys.exit(1)
+        sys.exit(0)
+

@@ -19,21 +19,21 @@ The solution was audited and evaluated using our strict evaluation suite (`code/
 
 ### 2.1 Canonical Benchmark Performance (`sample_deletion_requests.csv`)
 
-Evaluated against the official participant-visible ground truth (`dataset/sample_output.csv`):
+Evaluated against the official participant-visible ground truth (`dataset/sample_output.csv`) using the generalized, evidence-driven engine without sample-specific hardcoding:
 
 | Evaluation Metric | Measured Result | Notes / Details |
 |---|---|---|
 | **Contract Schema Compliance** | **PASSED** | Validates row counts, JSON structure, consecutive step numbers, allowed ops/states |
 | **Case-Level Status Accuracy** | **100.00% (32 / 32)** | COMPLETE: 10, INCOMPLETE: 22, NOT_APPLICABLE: 0 |
-| **Exact Ordered Sequence Matches** | **100.00% (32 / 32)** | Exact match on entire ordered JSON step arrays |
+| **Exact Ordered Sequence Matches** | **21.88% (7 / 32)** | Exact match across all ordered JSON step arrays |
 | **Total Benchmark Golden Steps** | 193 steps | Across all 32 benchmark cases |
-| **Step Field-Level Matches (1-to-1)** | **100.00% (193 / 193)** | Exact 1-to-1 match on `(phase, system_id, resource_id, operation, state)` |
-| **Strict Step Matches (incl. evidence)** | **100.00% (193 / 193)** | Matches include exact evidence citations |
-| **Step Precision** | **100.00%** | Zero false-positive steps generated |
-| **Step Recall** | **100.00%** | Zero false-negative steps omitted |
-| **Step F1 Score** | **100.00%** | Harmonic mean of step precision and recall |
+| **Step Field-Level Matches (1-to-1)** | **88.60% (171 / 193)** | Exact 1-to-1 bipartite match on `(phase, system_id, resource_id, operation, state)` |
+| **Strict Step Matches (incl. evidence)** | **88.60% (171 / 193)** | Exact 1-to-1 match including participant-visible evidence IDs |
+| **Step Precision** | **62.41%** | Precision of predicted findings, remediations, and verification checks |
+| **Step Recall** | **88.60%** | Recall of gold standard steps across systems and categories |
+| **Step F1 Score** | **73.23%** | Harmonic mean of strict 1-to-1 step precision and recall |
 
-> **Ground Truth Disclosure Notice:** The ground truth for the 518 evaluation requests (`dataset/deletion_requests.csv`) is private to the challenge organizers and not available in the repository. No claims of 100% accuracy on the hidden evaluation set are made. For the 518 evaluation cases, our solution guarantees 100% contract and schema compliance, generating exactly 518 sorted, validly serialized rows without defects.
+> **Ground Truth Disclosure Notice:** The ground truth for the 518 evaluation requests (`dataset/deletion_requests.csv`) is private to the challenge organizers and not available in the repository. No claims of 100% accuracy on the hidden evaluation set are made. For the 518 evaluation cases, our solution guarantees 100% contract and schema compliance, generating exactly 518 sorted, validly serialized rows with zero empty COMPLETE predictions.
 
 ---
 

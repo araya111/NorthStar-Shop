@@ -180,3 +180,44 @@ branch=main
 repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
 worktree=main
 parent_agent=none
+
+## [2026-10-25T17:28:00+05:30] Comprehensive audit engine hardening, generalized evidence grounding & validation
+
+User Prompt (verbatim, secrets redacted):
+NorthStar-Shop — Critical Correctness Fixes & Final Submission Hardening
+You are working on my existing HackerRank Orchestrate October 2026 project, “Ghost Data Still Exists,” in the NorthStar-Shop repository.
+Repository: https://github.com/araya111/NorthStar-Shop
+YOUR MISSION
+Audit the existing implementation, fix its correctness defects, strengthen its generalization to unseen cases, validate the complete 518-request dataset, and prepare a reliable submission.
+Do not rewrite the project from scratch. Do not optimize merely for the 32 public sample cases. Do not hardcode expected answers, case IDs, or evidence IDs to improve benchmark scores.
+Read AGENTS.md, problem_statement.md, dataset/deletion_rules.csv, the evidence manifest, the dataset schemas, and the existing tests before changing code. Follow the challenge contract exactly.
+PHASE 1 — AUDIT BEFORE MODIFYING
+PHASE 2 — FIX THE COMPLETE/INCOMPLETE DECISION ENGINE
+PHASE 3 — FIX REQUEST-INTENT CLASSIFICATION
+PHASE 4 — REMOVE SAMPLE-SPECIFIC HARDCODING
+PHASE 5 — RECONSTRUCT RESOURCE STATE AT AUDIT TIME
+PHASE 6 — APPLY DELETION POLICY BY CATEGORY AND CONDITIONS
+PHASE 7 — STRENGTHEN THE EVALUATOR
+PHASE 8 — ADD ADVERSARIAL AND REGRESSION TESTS
+PHASE 9 — REGENERATE AND VERIFY THE ACTUAL SUBMISSION
+PHASE 10 — FINAL REPORT
+
+Agent Response Summary:
+Audited the entire deletion audit engine, eliminating all sample-specific hardcoded dictionaries and resource IDs in favor of generalized evidence-driven mechanisms. Resolved the root causes of empty COMPLETE predictions by fixing log parser escaping and trace ID handling, ensuring 0 empty COMPLETE rows across all 518 evaluation requests. Strengthened request authorization intent with inquiry filters and multilingual stems, expanded the unit regression test suite to 11 comprehensive tests, updated the evaluator to enforce non-zero exit codes on contract violations, verified bit-for-bit determinism, and rebuilt the final submission package code.zip.
+
+Actions:
+* Refactored code/main.py: generalized evidence catalog, policy category mapping, extracted audit_case, dynamic origin-based account proof resolution
+* Strengthened code/evaluation/main.py: strict non-zero exit code on failures, full dataset validation CLI, rejection of empty COMPLETE/INCOMPLETE steps
+* Expanded tests/test_audit_engine.py with 11 comprehensive unit regression tests covering intent, policy, syntax, and generalization
+* Regenerated root output.csv for all 518 evaluation cases and confirmed 100% contract compliance and bit-for-bit determinism
+* Synchronized evaluation reports in evaluation/ and code/evaluation/ with actual reproducible benchmark results
+* Packaged clean code.zip containing code, evaluation reports, tests, and documentation without caches or datasets
+
+Context:
+tool=Antigravity IDE
+model=Gemini 3.8 Flash (High)
+branch=main
+repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
+worktree=main
+parent_agent=none
+
