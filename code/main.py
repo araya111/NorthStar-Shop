@@ -16,7 +16,10 @@ import hashlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
-import pypdf
+try:
+    import pypdf
+except ImportError:
+    pypdf = None
 
 # Repository root and dataset paths
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -592,20 +595,26 @@ class EvidenceCatalog:
         try:
             is_attach = "attachment" in os.path.basename(fpath).lower()
             cat = "SUPPORT_ATTACHMENT" if is_attach else None
-            reader = pypdf.PdfReader(fpath)
-            for page in reader.pages:
-                text = page.extract_text()
-                p_emails = set(re.findall(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', text))
-                p_uids = set(re.findall(r'(user_\d+)', text))
-                p_rids = set(re.findall(r'((?:support|search|account|analytics|backup|export|audit_record)_\d+)', text))
-                for rid in p_rids:
-                    em = list(p_emails)[0] if p_emails else None
-                    uid = list(p_uids)[0] if p_uids else (self.id_graph.resolve_user_id(em) if (self.id_graph and em) else None)
-                    self.records_by_file[fid].append({
-                        "file_id": fid, "captured_at": cap_at, "resource_id": rid,
-                        "is_present": True, "category": cat, "user_id": uid, "email": em,
-                        "has_pii": bool(p_emails or p_uids),
-                    })
+            text = ""
+            if pypdf is not None:
+                reader = pypdf.PdfReader(fpath)
+                for page in reader.pages:
+                    text += (page.extract_text() or "") + "\n"
+            else:
+                with open(fpath, "rb") as f:
+                    text = f.read().decode("latin-1", errors="ignore")
+
+            p_emails = set(re.findall(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', text))
+            p_uids = set(re.findall(r'(user_\d+)', text))
+            p_rids = set(re.findall(r'((?:support|search|account|analytics|backup|export|audit_record)_\d+)', text))
+            for rid in p_rids:
+                em = list(p_emails)[0] if p_emails else None
+                uid = list(p_uids)[0] if p_uids else (self.id_graph.resolve_user_id(em) if (self.id_graph and em) else None)
+                self.records_by_file[fid].append({
+                    "file_id": fid, "captured_at": cap_at, "resource_id": rid,
+                    "is_present": True, "category": cat, "user_id": uid, "email": em,
+                    "has_pii": bool(p_emails or p_uids),
+                })
         except Exception as e:
             print(f"Warning: Failed parsing pdf {fid}: {e}", file=sys.stderr)
 
@@ -967,9 +976,16 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
         viol_op = None
         viol_st = "PRESENT"
 
+        req_time = to_dt(req.get("requested_at"))
+
         # Evaluate the latest observation of each source at or before audit_at
         for sk, s_obs in by_source.items():
             s_latest = sorted(s_obs, key=lambda x: to_dt(x.get("captured_at")) or datetime(1970, 1, 1, tzinfo=timezone.utc))[-1]
+            s_cap_time = to_dt(s_latest.get("captured_at"))
+            # Observations captured strictly before the deletion request was submitted cannot prove undeleted findings
+            if req_time and s_cap_time and s_cap_time < req_time:
+                continue
+
             r_cat = s_latest.get("category") or cat
             is_del_cat = (r_cat in ("USER_PROFILE", "SECONDARY_IDENTIFIER", "SEARCH_INDEX_ENTRY", "CACHE_ENTRY", "SUPPORT_ATTACHMENT", "USER_EXPORT", "MARKETING_PROFILE", "ACCOUNT_DATABASE"))
             is_red_cat = (r_cat in ("SUPPORT_MESSAGE", "EMAIL_DELIVERY_LOG", "ACCOUNT_TOMBSTONE"))
@@ -1019,6 +1035,16 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
             })
 
     pred_status = "INCOMPLETE" if violations else "COMPLETE"
+
+    # For INCOMPLETE cases, ensure policy-required retained records known for the subject are included in future verification
+    if pred_status == "INCOMPLETE" and uid:
+        for k_rid in sorted(user_to_resources.get(uid, set())):
+            if (k_rid.startswith("audit_record_") or k_rid.startswith("tax_")) and not any(r["resource_id"] == k_rid for r in compliant + violations):
+                compliant.append({
+                    "resource_id": k_rid,
+                    "evidence_id": "",
+                    "category": "SECURITY_AUDIT_LOG",
+                })
 
     # If no account resource is in compliant or violations, find evidence of primary account absence
     has_account = any(r["resource_id"].startswith("account_") for r in compliant + violations)
@@ -1144,10 +1170,14 @@ def run_pipeline(target_csv="deletion_requests.csv", output_csv_path=DEFAULT_OUT
 
 
 if __name__ == "__main__":
-    target = "deletion_requests.csv"
-    if len(sys.argv) > 1 and sys.argv[1] == "--sample":
-        target = "sample_deletion_requests.csv"
-        out = os.path.join(BASE_DIR, "sample_output_pred.csv")
-        run_pipeline(target, out)
-    else:
-        run_pipeline(target, DEFAULT_OUTPUT_PATH)
+    import argparse
+    parser = argparse.ArgumentParser(description="NorthStar Shop Deletion-Audit Engine")
+    parser.add_argument("--target-csv", type=str, default="deletion_requests.csv", help="Input deletion requests CSV filename or path")
+    parser.add_argument("--output-csv", type=str, default=DEFAULT_OUTPUT_PATH, help="Path for generated output CSV")
+    parser.add_argument("--dataset-dir", type=str, default=DATASET_DIR, help="Path to participant-facing dataset directory")
+    parser.add_argument("--sample", action="store_true", help="Audit sample dataset (sample_deletion_requests.csv)")
+    args = parser.parse_args()
+
+    target = "sample_deletion_requests.csv" if args.sample else args.target_csv
+    out = os.path.join(BASE_DIR, "sample_output_pred.csv") if (args.sample and args.output_csv == DEFAULT_OUTPUT_PATH) else args.output_csv
+    run_pipeline(target_csv=target, output_csv_path=out, dataset_dir=args.dataset_dir)

@@ -25,13 +25,13 @@ Evaluated against the official participant-visible ground truth (`dataset/sample
 |---|---|---|
 | **Contract Schema Compliance** | **PASSED** | Validates row counts, JSON structure, consecutive step numbers, allowed ops/states |
 | **Case-Level Status Accuracy** | **100.00% (32 / 32)** | COMPLETE: 10, INCOMPLETE: 22, NOT_APPLICABLE: 0 |
-| **Exact Ordered Sequence Matches** | **40.62% (13 / 32)** | Exact match across all ordered JSON step arrays (improved from 8/32 / 25.00%) |
+| **Exact Ordered Sequence Matches** | **43.75% (14 / 32)** | Exact match across all ordered JSON step arrays (improved from 8/32 / 25.00% and 13/32 / 40.62%) |
 | **Total Benchmark Golden Steps** | 193 steps | Across all 32 benchmark cases |
-| **Step Field-Level Matches (1-to-1)** | **86.53% (167 / 193)** | Exact 1-to-1 bipartite match on `(phase, system_id, resource_id, operation, state)` |
-| **Strict Step Matches (incl. evidence)** | **86.01% (166 / 193)** | Exact 1-to-1 match including participant-visible evidence IDs |
-| **Step Precision** | **90.22%** | Precision of predicted findings, remediations, and verification checks (improved from 63.50%) |
-| **Step Recall** | **86.01%** | Recall of gold standard steps across systems and categories |
-| **Step F1 Score** | **88.06%** | Harmonic mean of strict 1-to-1 step precision and recall (improved from 74.52%) |
+| **Step Field-Level Matches (1-to-1)** | **89.12% (172 / 193)** | Exact 1-to-1 bipartite match on `(phase, system_id, resource_id, operation, state)` |
+| **Strict Step Matches (incl. evidence)** | **88.60% (171 / 193)** | Exact 1-to-1 match including participant-visible evidence IDs |
+| **Step Precision** | **91.44%** | Precision of predicted findings, remediations, and verification checks (improved from 63.50%) |
+| **Step Recall** | **88.60%** | Recall of gold standard steps across systems and categories |
+| **Step F1 Score** | **90.00%** | Harmonic mean of strict 1-to-1 step precision and recall (improved from 74.52% and 88.06%) |
 
 > **Ground Truth Disclosure Notice:** The ground truth for the 518 evaluation requests (`dataset/deletion_requests.csv`) is private to the challenge organizers and not available in the repository. No claims of 100% accuracy on the hidden evaluation set are made. For the 518 evaluation cases, our solution guarantees 100% contract and schema compliance, generating exactly 518 sorted, validly serialized rows with zero empty COMPLETE predictions.
 
@@ -104,6 +104,13 @@ During the comprehensive audit of the original codebase, several defects were di
 
 ### 11. Zero-Network Architecture & Standalone Package Verification
 - **Implementation:** Shipped source code contains zero external network or model API calls. Offline compliance is enforced via AST scanning and active runtime socket blocking interceptors in both the test suite and release gate. The release gate independently extracts `code.zip` to an isolated temporary directory and executes the full unit test suite from the extracted package to verify complete standalone portability.
+
+### 12. Deletion Request Temporal Cutoff & Policy Retained Verification
+- **Defect:** Prior logic evaluated all historical database observations regardless of whether they occurred prior to the deletion request. In cases such as `case_07`, an evidence snapshot captured 4 months prior to `requested_at` reflected normal active account usage rather than deletion workflow non-compliance. Furthermore, incomplete cases omitted verification of known policy-retained records (`audit_record_...`, `tax_...`).
+- **Fix:** (a) Added a temporal lower-bound check discarding baseline datastore snapshots captured before `requested_at` from generating false `REPORT_REMAINING_RECORD` findings, accurately classifying compliant post-deletion state; (b) Included known policy-required retained records belonging to the subject into post-remediation verification checks (`VERIFY_RECORD_PRESENT`). This resolved false findings in `case_07` and improved sequence fidelity in `case_09`, `case_29`, and `case_30`, raising Exact Case Sequence Matches to 14/32 (43.75%), Strict Step Matches to 171/193 (88.60%), and Step F1 to 90.00%.
+
+### 13. Multi-Source Evidence Validation & Clean Environment Extraction
+- **Implementation:** Added full support and contract validation for all three official evidence reference types (`file_id`, `activity_id`, `audit_id`), validating each reference against its authoritative registry (`evidence_files.csv`, `system_activity.csv`, `user_audit_log.csv`) and confirming temporal bounds (`ev_time <= audit_at`). Hardened Gate 9 to independently extract `code.zip` into a clean temporary directory, verify dependencies via `requirements.txt`, supply participant-facing datasets separately, and validate execution and contract output.
 
 ---
 

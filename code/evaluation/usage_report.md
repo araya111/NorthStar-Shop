@@ -50,12 +50,27 @@ Measured on a standard workstation environment across all 518 evaluation cases:
 
 During repository auditing, defect diagnosis, and evaluation framework implementation, the Antigravity IDE coding harness utilized `Gemini 3.8 Flash (High)` for pair programming:
 
-| Phase | Purpose | Harness / Model | Development Sessions |
+| Phase | Purpose | Harness / Model | Development Sessions | Model Tokens / Cost Telemetry |
+|---|---|---|---|---|
+| **Defect Diagnosis & Audit** | Tracing multi-source log schemas, SQL replica drift, and PDF attachments | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns | [Inaccessible from local environment / not exposed by harness] |
+| **Evaluator Overhaul** | Implementing strict bipartite matching (`match_steps_strict`) and contract assertions | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns | [Inaccessible from local environment / not exposed by harness] |
+| **Evidence Registry Audit** | Inspecting physical image artifacts in `dataset/evidence/images/` | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns | [Inaccessible from local environment / not exposed by harness] |
+| **Regression Test Creation** | Authoring `tests/test_audit_engine.py` unit tests | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns | [Inaccessible from local environment / not exposed by harness] |
+
+### 3.1 Known and Audited Metrics Summary
+
+| Scope | Metric | Known Value / Audit Status | Source of Evidence |
 |---|---|---|---|
-| **Defect Diagnosis & Audit** | Tracing multi-source log schemas, SQL replica drift, and PDF attachments | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns |
-| **Evaluator Overhaul** | Implementing strict bipartite matching (`match_steps_strict`) and contract assertions | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns |
-| **Evidence Registry Audit** | Inspecting physical image artifacts in `dataset/evidence/images/` | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns |
-| **Regression Test Creation** | Authoring `tests/test_audit_engine.py` unit tests | Antigravity IDE / `Gemini 3.8 Flash (High)` | Interactive Dev Turns |
+| **Inference Pipeline** | Provider & Model | None (0 Model Calls) | `code/main.py` offline AST audit |
+| **Inference Pipeline** | Input Tokens | 0 tokens | `code/main.py` AST audit & socket isolation |
+| **Inference Pipeline** | Output Tokens | 0 tokens | `code/main.py` AST audit & socket isolation |
+| **Inference Pipeline** | Total Model Cost | $0.000 USD | Zero API dependencies |
+| **Inference Pipeline** | Cost per Request | $0.000 USD | Zero API dependencies |
+| **Development Time** | Provider | Google DeepMind | Antigravity IDE runtime |
+| **Development Time** | Model Name | `Gemini 3.8 Flash (High)` | Antigravity IDE runtime configuration |
+| **Development Time** | Token Counts & Cost | [Unavailable] | Not exposed by local harness telemetry |
+
+> **Accounting Clarification:** Inference-time evaluation is 100% offline, deterministic, and self-contained with exactly 0 external API calls and $0.00 inference cost. Development-time AI assistance token counts and monetary costs are not tracked in local workspace logs by the IDE harness and are accurately declared as unavailable rather than estimated with synthetic figures.
 
 ---
 

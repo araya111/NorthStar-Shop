@@ -16,7 +16,7 @@ from main import (
     audit_case,
     to_dt,
 )
-from evaluation.main import validate_contract, match_steps_strict
+from evaluation.main import validate_contract, match_steps_strict, validate_evidence_reference
 
 
 class TestAuditEngineRegression(unittest.TestCase):
@@ -448,34 +448,41 @@ class TestAuditEngineRegression(unittest.TestCase):
 
 
     # -------------------------------------------------------------------------
-    # Scenario 26: Zero external API or network dependencies (Offline Isolation)
+    # Scenario 26: Zero external API or network dependencies (Broadened Offline Isolation)
     # -------------------------------------------------------------------------
     def test_26_zero_external_api_or_network_dependencies(self):
         import ast
         import socket
 
-        # 1. AST inspection: assert no prohibited network/API modules
-        prohibited = {
+        # 1. Broadened AST inspection across all shipped Python scripts
+        runtime_prohibited = {
             "requests", "httpx", "urllib", "aiohttp", "socket", "http.client",
             "openai", "anthropic", "google.generativeai", "boto3", "huggingface",
             "langchain", "subprocess"
         }
+        test_harness_prohibited = {
+            "requests", "httpx", "urllib", "aiohttp", "http.client",
+            "openai", "anthropic", "google.generativeai", "boto3", "huggingface",
+            "langchain"
+        }
         target_files = [
-            os.path.join(BASE_DIR, "code", "main.py"),
-            os.path.join(BASE_DIR, "code", "evaluation", "main.py")
+            (os.path.join(BASE_DIR, "code", "main.py"), runtime_prohibited),
+            (os.path.join(BASE_DIR, "code", "evaluation", "main.py"), runtime_prohibited),
+            (os.path.join(BASE_DIR, "code", "evaluation", "release_gate.py"), test_harness_prohibited),
+            (os.path.join(BASE_DIR, "tests", "test_audit_engine.py"), test_harness_prohibited),
         ]
-        for fp in target_files:
+        for fp, prohibited_modules in target_files:
             with open(fp, "r", encoding="utf-8") as f:
                 tree = ast.parse(f.read(), fp)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for n in node.names:
                         base_mod = n.name.split(".")[0]
-                        self.assertNotIn(base_mod, prohibited, f"Prohibited module '{base_mod}' in {fp}")
+                        self.assertNotIn(base_mod, prohibited_modules, f"Prohibited module '{base_mod}' in {fp}")
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
                         base_mod = node.module.split(".")[0]
-                        self.assertNotIn(base_mod, prohibited, f"Prohibited module '{base_mod}' in {fp}")
+                        self.assertNotIn(base_mod, prohibited_modules, f"Prohibited module '{base_mod}' in {fp}")
 
         # 2. Runtime socket isolation check: assert audit_case runs with network prohibited
         orig_connect = socket.socket.connect
@@ -495,6 +502,122 @@ class TestAuditEngineRegression(unittest.TestCase):
         finally:
             socket.socket.connect = orig_connect
 
+    # -------------------------------------------------------------------------
+    # Scenario 27: Multi-Source Evidence Validation - file_id
+    # -------------------------------------------------------------------------
+    def test_27_evidence_reference_file_id_validation(self):
+        valid_files = {"evidence_01", "file_snapshot_02"}
+        issues = []
+        # Valid file_id
+        validate_evidence_reference("evidence_01", "case_01", 1, "FINDING", issues, valid_file_ids=valid_files)
+        self.assertEqual(len(issues), 0)
+
+        # Invalid file_id
+        validate_evidence_reference("evidence_unknown", "case_01", 2, "FINDING", issues, valid_file_ids=valid_files)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("not found in evidence_files.csv", issues[0])
+
+    # -------------------------------------------------------------------------
+    # Scenario 28: Multi-Source Evidence Validation - activity_id
+    # -------------------------------------------------------------------------
+    def test_28_evidence_reference_activity_id_validation(self):
+        valid_activities = {"activity_sync_100", "act_backup_200"}
+        issues = []
+        # Valid activity_id
+        validate_evidence_reference("activity_sync_100", "case_02", 1, "FINDING", issues, valid_activity_ids=valid_activities)
+        self.assertEqual(len(issues), 0)
+
+        # Invalid activity_id
+        validate_evidence_reference("activity_ghost", "case_02", 2, "FINDING", issues, valid_activity_ids=valid_activities)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("not found in system_activity.csv", issues[0])
+
+    # -------------------------------------------------------------------------
+    # Scenario 29: Multi-Source Evidence Validation - audit_id
+    # -------------------------------------------------------------------------
+    def test_29_evidence_reference_audit_id_validation(self):
+        valid_audits = {"audit_log_501", "aud_hist_999"}
+        issues = []
+        # Valid audit_id
+        validate_evidence_reference("audit_log_501", "case_03", 1, "FINDING", issues, valid_audit_ids=valid_audits)
+        self.assertEqual(len(issues), 0)
+
+        # Invalid audit_id
+        validate_evidence_reference("audit_missing", "case_03", 2, "FINDING", issues, valid_audit_ids=valid_audits)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("not found in user_audit_log.csv", issues[0])
+
+    # -------------------------------------------------------------------------
+    # Scenario 30: Empty evidence_id rules for Remediation & Incomplete Verification
+    # -------------------------------------------------------------------------
+    def test_30_evidence_reference_empty_rules_remediation_and_verification(self):
+        valid_files = {"evidence_01"}
+
+        # 1. Non-empty evidence_id on REMEDIATION must fail
+        bad_rem_rows = [{
+            "case_id": "case_bad_rem",
+            "deletion_status": "INCOMPLETE",
+            "steps_json": json.dumps([
+                {"step_no": 1, "phase": "FINDING", "system_id": "s1", "resource_id": "r1", "operation": "REPORT_REMAINING_RECORD", "state": "PRESENT", "evidence_id": "evidence_01"},
+                {"step_no": 2, "phase": "REMEDIATION", "system_id": "s1", "resource_id": "r1", "operation": "DELETE_RECORD", "state": "ABSENT", "evidence_id": "evidence_01"},
+                {"step_no": 3, "phase": "VERIFICATION", "system_id": "s1", "resource_id": "r1", "operation": "VERIFY_RECORD_ABSENT", "state": "ABSENT", "evidence_id": ""},
+            ])
+        }]
+        is_valid, issues = validate_contract(bad_rem_rows, expected_row_count=1, valid_file_ids=valid_files)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("REMEDIATION step 2 must have empty evidence_id" in iss for iss in issues))
+
+        # 2. Non-empty evidence_id on INCOMPLETE VERIFICATION must fail
+        bad_ver_rows = [{
+            "case_id": "case_bad_ver",
+            "deletion_status": "INCOMPLETE",
+            "steps_json": json.dumps([
+                {"step_no": 1, "phase": "FINDING", "system_id": "s1", "resource_id": "r1", "operation": "REPORT_REMAINING_RECORD", "state": "PRESENT", "evidence_id": "evidence_01"},
+                {"step_no": 2, "phase": "REMEDIATION", "system_id": "s1", "resource_id": "r1", "operation": "DELETE_RECORD", "state": "ABSENT", "evidence_id": ""},
+                {"step_no": 3, "phase": "VERIFICATION", "system_id": "s1", "resource_id": "r1", "operation": "VERIFY_RECORD_ABSENT", "state": "ABSENT", "evidence_id": "evidence_01"},
+            ])
+        }]
+        is_valid, issues = validate_contract(bad_ver_rows, expected_row_count=1, valid_file_ids=valid_files)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("VERIFICATION step 3 must have empty evidence_id" in iss for iss in issues))
+
+        # 3. Empty evidence_id on COMPLETE VERIFICATION must fail
+        bad_comp_rows = [{
+            "case_id": "case_bad_comp",
+            "deletion_status": "COMPLETE",
+            "steps_json": json.dumps([
+                {"step_no": 1, "phase": "VERIFICATION", "system_id": "s1", "resource_id": "r1", "operation": "VERIFY_RECORD_ABSENT", "state": "ABSENT", "evidence_id": ""},
+            ])
+        }]
+        is_valid, issues = validate_contract(bad_comp_rows, expected_row_count=1, valid_file_ids=valid_files)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("missing evidence_id" in iss for iss in issues))
+
+        # 4. Compliant INCOMPLETE case passes
+        good_incomp_rows = [{
+            "case_id": "case_good_incomp",
+            "deletion_status": "INCOMPLETE",
+            "steps_json": json.dumps([
+                {"step_no": 1, "phase": "FINDING", "system_id": "s1", "resource_id": "r1", "operation": "REPORT_REMAINING_RECORD", "state": "PRESENT", "evidence_id": "evidence_01"},
+                {"step_no": 2, "phase": "REMEDIATION", "system_id": "s1", "resource_id": "r1", "operation": "DELETE_RECORD", "state": "ABSENT", "evidence_id": ""},
+                {"step_no": 3, "phase": "VERIFICATION", "system_id": "s1", "resource_id": "r1", "operation": "VERIFY_RECORD_ABSENT", "state": "ABSENT", "evidence_id": ""},
+            ])
+        }]
+        is_valid, issues = validate_contract(good_incomp_rows, expected_row_count=1, valid_file_ids=valid_files)
+        self.assertTrue(is_valid, f"Unexpected contract issues: {issues}")
+
+        # 5. Compliant COMPLETE case passes
+        good_comp_rows = [{
+            "case_id": "case_good_comp",
+            "deletion_status": "COMPLETE",
+            "steps_json": json.dumps([
+                {"step_no": 1, "phase": "VERIFICATION", "system_id": "s1", "resource_id": "r1", "operation": "VERIFY_RECORD_ABSENT", "state": "ABSENT", "evidence_id": "evidence_01"},
+            ])
+        }]
+        is_valid, issues = validate_contract(good_comp_rows, expected_row_count=1, valid_file_ids=valid_files)
+        self.assertTrue(is_valid, f"Unexpected contract issues: {issues}")
+
 
 if __name__ == "__main__":
     unittest.main()
+

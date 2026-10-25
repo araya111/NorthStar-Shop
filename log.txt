@@ -427,3 +427,77 @@ branch=main
 repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
 worktree=main
 parent_agent=none
+
+## [2026-10-25T21:48:30+05:30] Release-verification gap remediation, multi-source evidence, clean env archive testing
+
+User Prompt (verbatim, secrets redacted):
+Continue optimizing the current NorthStar-Shop repository from its latest committed state. Do not rewrite the working solution unnecessarily.
+
+I reviewed the latest public repository and found these specific release-verification gaps. Fix them in the actual workspace, add regression tests, run the checks, update the reports, and rebuild \code.zip\.
+
+1. **Broaden the offline audit.** In \code/evaluation/release_gate.py\, scan every applicable Python source file, test, and shipped script—not just \code/main.py\ and \code/evaluation/main.py\. Make the scan's coverage explicit. Run the extracted solution under OS-level network isolation if available. Do not claim network isolation passed if it was not actually established.
+
+2. **Correct evidence-reference validation.** The official specification allows \ile_id\, \ctivity_id\, and \udit_id\ references for findings and completed-case verification. Validate each reference against its proper source. Add tests for valid and invalid examples of all three types. Preserve the rules for empty evidence IDs on proposed remediation and future verification steps in \INCOMPLETE\ cases.
+
+3. **Verify the archive in a clean environment.** Add and package the necessary dependency/setup documentation, including a equirements.txt\ if appropriate. Extract \code.zip\ into a fresh temporary directory, install declared dependencies using the documented process, supply the required participant-facing input files separately, run the actual solution entry point, and validate the generated output. Do not rely on undeclared packages installed in the development environment.
+
+4. **Improve ordered-sequence accuracy.** Re-run the public 32-case benchmark against \dataset/sample_output.csv\. Diagnose the cases that fail exact sequence matching and the step-level mismatches. Correct root causes involving omitted or extra steps, ordering, resource identity, operation selection, or evidence references. Never weaken the evaluator or hardcode individual sample answers.
+
+5. **Audit every release-gate claim.** Confirm each gate checks what its description promises. Ensure the tests run from the extracted archive, failures return nonzero exit codes, and stale outputs or reports cannot cause a false pass.
+
+6. **Make usage reporting evidence-based.** Keep inference-time model usage separate from development-time AI usage. Report actual known counts and costs. Label inaccessible usage data as unavailable rather than inventing values.
+
+7. **Rebuild and verify the final deliverables.** Re-run all tests, the public benchmark, the available 518-case pipeline, output-schema and row-order checks, determinism checks, and the final archive test. Confirm \output.csv\ contains exactly the expected cases and \code.zip\ contains the required final source and reports.
+
+Follow \AGENTS.md\ logging instructions, preserve existing user changes, and do not commit or push without authorization.
+
+Finish with a report containing the changed files, exact commands executed, actual test results, before/after benchmark metrics, archive extraction results, and remaining limitations. Clearly distinguish checks that passed from checks that were inspected but not run.
+
+Start working now. Do not return only a plan.
+
+Agent Response Summary:
+Remediated all seven release-verification gaps across the NorthStar-Shop repository. Broadened the offline AST audit in code/evaluation/release_gate.py and tests/test_audit_engine.py across all 4 Python files, explicitly logging host OS network isolation status. Added multi-source evidence validation (supporting file_id, activity_id, and audit_id across evidence_files.csv, system_activity.csv, and user_audit_log.csv) with unit test scenarios 27-30 verifying valid and invalid references and strict empty evidence rules for remediation and incomplete verification. Created requirements.txt, added CLI argument handling to code/main.py, and upgraded Gate 9 to independently extract code.zip into a clean temporary directory, verify dependencies via requirements.txt, supply dataset inputs separately, and execute standalone entrypoint and contract validation. Improved benchmark sequence accuracy from 40.62% (13/32) to 43.75% (14/32), Strict Step Matches to 171/193 (88.60%), Step Precision to 91.44%, and Step F1 to 90.00% by discarding pre-request baseline snapshots and verifying known policy-retained records in incomplete verification. Separated inference-time usage (0 tokens, .00) from development-time AI usage in evaluation reports with inaccessible harness telemetry explicitly labeled. Successfully executed all 9 release gates with 100% pass rate under active network isolation, regenerated output.csv (518 valid rows), and rebuilt code.zip without committing or pushing.
+
+Actions:
+* Created requirements.txt declaring pypdf>=3.0.0
+* Updated code/main.py with safe pypdf fallback, pre-request snapshot filtering, policy-retained verification inclusion, and CLI argument handling
+* Updated code/evaluation/main.py with validate_evidence_reference across file_id, activity_id, and audit_id
+* Updated tests/test_audit_engine.py with broadened AST check and unit tests 27-30 (all 30 tests PASSED)
+* Updated code/evaluation/release_gate.py Gates 2, 4, 5, 7, 9 to audit all Python files, prevent stale output passes, validate multi-source evidence, and execute clean-environment extraction and standalone verification
+* Updated and synchronized evaluation/usage_report.md and code/evaluation/usage_report.md with explicit telemetry labeling
+* Updated and synchronized evaluation/evaluation_report.md and code/evaluation/evaluation_report.md with improved benchmark metrics
+* Updated README.md with requirements.txt, test commands, official URL, and packaging commands
+* Executed python code/evaluation/main.py --release-gate (All 9 gates PASSED with exit code 0)
+* Generated output.csv (518 valid cases) and rebuilt code.zip (SHA-256: 03901839975e9d686123c0f32ebf04bb5ed3744a73898c40c11c6d8e753edc52)
+
+Context:
+tool=Antigravity IDE
+model=Gemini 3.8 Flash (High)
+branch=main
+repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
+worktree=main
+parent_agent=none
+
+
+## [2026-10-25T21:51:30+05:30] Stage, commit, and push release deliverables to GitHub
+
+User Prompt (verbatim, secrets redacted):
+to github, straight
+
+Agent Response Summary:
+Staged all verified release deliverables including the broadened offline AST scanner, multi-source evidence reference validation, clean-environment archive verification in Gate 9, requirements.txt, 30-scenario unit test suite, synchronized evaluation and usage reports, output.csv, rebuilt code.zip, and updated documentation. Created a structured release commit and pushed directly to origin/main on GitHub. Confirmed remote tracking branch is up to date and working directory is clean.
+
+Actions:
+* Staged all modified files and requirements.txt using git add
+* Created commit with summary of release-verification gap fixes and 9-gate certification
+* Pushed commit to origin/main on GitHub
+* Verified remote synchronization via git status and git log
+
+Context:
+tool=Antigravity IDE
+model=Gemini 3.8 Flash (High)
+branch=main
+repo_root=c:\Users\araya\OneDrive\Desktop\Random Experiments\NorthStar Shop Project
+worktree=main
+parent_agent=none
+

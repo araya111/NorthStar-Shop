@@ -21,6 +21,12 @@ git clone https://github.com/interviewstreet/hackerrank-orchestrate-october26.gi
 cd hackerrank-orchestrate-october26
 ```
 
+Install declared project dependencies (standard library + `pypdf`):
+
+```bash
+pip install -r requirements.txt
+```
+
 Start your AI coding tool from the **repository root** so it automatically reads [`AGENTS.md`](./AGENTS.md) and logs your session turns to `log.txt` in the root directory.
 
 Build your solution in `code/main.py`, or use another language and document its setup and run command clearly in your README.
@@ -37,11 +43,20 @@ Run the starter Python entry point with:
 python code/main.py
 ```
 
+Run the unit test suite (30 scenarios):
+
+```bash
+python -m unittest tests/test_audit_engine.py
+```
+
 Run the automated release gate to verify all 9 critical gates in one command:
 
 ```bash
 python code/evaluation/main.py --release-gate
 ```
+
+Official Contest & Submission URL:
+https://www.hackerrank.com/contests/hackerrank-orchestrate-october26/challenges/ghost-data-still-exists
 
 The blank template at `dataset/output.csv` is provided as a reference. Your final generated file for submission must be the root-level `output.csv`.
 
@@ -137,13 +152,19 @@ To package `code.zip` from the repository root without bundling the dataset:
 **macOS / Linux:**
 
 ```bash
-zip -r code.zip README.md code -x "*/__pycache__/*" "*/.venv/*" "*/venv/*" "*/node_modules/*" "*/.git/*" "*/.DS_Store"
+zip -r code.zip README.md requirements.txt code evaluation tests -x "*/__pycache__/*" "*/.venv/*" "*/venv/*" "*/node_modules/*" "*/.git/*" "*/.DS_Store"
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-Compress-Archive -Path README.md, code -DestinationPath code.zip -Force
+Compress-Archive -Path README.md, requirements.txt, code, evaluation, tests -DestinationPath code.zip -Force
+```
+
+Or execute the automated release gate which packages and validates `code.zip` cleanly:
+
+```bash
+python code/evaluation/main.py --release-gate
 ```
 
 When packaging `code.zip`:

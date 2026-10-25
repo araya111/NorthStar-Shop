@@ -43,7 +43,40 @@ ALLOWED_OPERATIONS = {
 PHASE_ORDER = {"FINDING": 1, "REMEDIATION": 2, "VERIFICATION": 3}
 
 
-def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=None, expected_case_ids=None):
+def validate_evidence_reference(ev_id, cid, s_no, phase, issues, valid_file_ids=None, valid_activity_ids=None, valid_audit_ids=None):
+    """
+    Validates that evidence_id is non-empty and references its proper source:
+    - file_id: evidence_files.csv (e.g. evidence_01, file_01)
+    - activity_id: system_activity.csv (e.g. activity_01, act_01)
+    - audit_id: user_audit_log.csv (e.g. audit_01)
+    """
+    if not ev_id:
+        issues.append(f"Case {cid}: {phase} step {s_no} missing evidence_id")
+        return
+
+    # Check proper source by identifier prefix
+    if ev_id.startswith("evidence_") or ev_id.startswith("file_"):
+        if valid_file_ids is not None and ev_id not in valid_file_ids:
+            issues.append(f"Case {cid}: {phase} step {s_no} references unknown file_id '{ev_id}' not found in evidence_files.csv")
+    elif ev_id.startswith("activity_") or ev_id.startswith("act_"):
+        if valid_activity_ids is not None and ev_id not in valid_activity_ids:
+            issues.append(f"Case {cid}: {phase} step {s_no} references unknown activity_id '{ev_id}' not found in system_activity.csv")
+    elif ev_id.startswith("audit_"):
+        if valid_audit_ids is not None and ev_id not in valid_audit_ids:
+            issues.append(f"Case {cid}: {phase} step {s_no} references unknown audit_id '{ev_id}' not found in user_audit_log.csv")
+    else:
+        known = False
+        if valid_file_ids is not None and ev_id in valid_file_ids:
+            known = True
+        elif valid_activity_ids is not None and ev_id in valid_activity_ids:
+            known = True
+        elif valid_audit_ids is not None and ev_id in valid_audit_ids:
+            known = True
+        if not known and (valid_file_ids is not None or valid_activity_ids is not None or valid_audit_ids is not None):
+            issues.append(f"Case {cid}: {phase} step {s_no} references unknown evidence_id '{ev_id}' not found in any evidence source")
+
+
+def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=None, valid_activity_ids=None, valid_audit_ids=None, expected_case_ids=None, dataset_dir=None):
     """
     Validates output.csv against all challenge contract rules:
     - Row count and ordering
@@ -55,9 +88,22 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
     - Consecutive 1-indexed step_no
     - Phase ordering (FINDING -> REMEDIATION -> VERIFICATION)
     - Allowed operations and corresponding states
-    - Evidence references (empty for remediation & incomplete verification; valid for findings/complete verifications)
+    - Evidence references (empty for remediation & incomplete verification; valid file_id, activity_id, or audit_id for findings/complete verifications)
     """
     issues = []
+    ds_dir = dataset_dir or os.path.join(BASE_DIR, "dataset")
+
+    # Auto-load registries if not explicitly provided
+    if valid_file_ids is None and os.path.exists(os.path.join(ds_dir, "evidence_files.csv")):
+        with open(os.path.join(ds_dir, "evidence_files.csv"), "r", encoding="utf-8") as f:
+            valid_file_ids = {r["file_id"] for r in csv.DictReader(f)}
+    if valid_activity_ids is None and os.path.exists(os.path.join(ds_dir, "system_activity.csv")):
+        with open(os.path.join(ds_dir, "system_activity.csv"), "r", encoding="utf-8") as f:
+            valid_activity_ids = {r["activity_id"] for r in csv.DictReader(f)}
+    if valid_audit_ids is None and os.path.exists(os.path.join(ds_dir, "user_audit_log.csv")):
+        with open(os.path.join(ds_dir, "user_audit_log.csv"), "r", encoding="utf-8") as f:
+            valid_audit_ids = {r["audit_id"] for r in csv.DictReader(f)}
+
     if isinstance(csv_path_or_rows, list):
         reader = csv_path_or_rows
     else:
@@ -111,10 +157,7 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
             for s in steps:
                 if s.get("phase") != "VERIFICATION":
                     issues.append(f"Case {cid} (COMPLETE): contains non-VERIFICATION step phase '{s.get('phase')}'")
-                if not s.get("evidence_id"):
-                    issues.append(f"Case {cid} (COMPLETE): verification step {s.get('step_no')} missing evidence_id")
-                elif valid_file_ids and s.get("evidence_id") not in valid_file_ids:
-                    issues.append(f"Case {cid}: references unknown evidence_id '{s.get('evidence_id')}'")
+                validate_evidence_reference(s.get("evidence_id"), cid, s.get("step_no", "?"), "VERIFICATION", issues, valid_file_ids, valid_activity_ids, valid_audit_ids)
 
         if status == "INCOMPLETE":
             if len(steps) == 0:
@@ -170,16 +213,14 @@ def validate_contract(csv_path_or_rows, expected_row_count=None, valid_file_ids=
                     issues.append(f"Case {cid}: Operation '{op}' expected state '{expected_st}', got '{st}'")
 
             if phase == "FINDING":
-                if not ev_id:
-                    issues.append(f"Case {cid}: FINDING step {s_no} has empty evidence_id")
-                elif valid_file_ids and ev_id not in valid_file_ids:
-                    issues.append(f"Case {cid}: FINDING step {s_no} references unknown evidence_id '{ev_id}'")
+                validate_evidence_reference(ev_id, cid, s_no, "FINDING", issues, valid_file_ids, valid_activity_ids, valid_audit_ids)
             elif phase == "REMEDIATION":
                 if ev_id != "":
                     issues.append(f"Case {cid}: REMEDIATION step {s_no} must have empty evidence_id, got '{ev_id}'")
             elif phase == "VERIFICATION" and status == "INCOMPLETE":
                 if ev_id != "":
                     issues.append(f"Case {cid} (INCOMPLETE): VERIFICATION step {s_no} must have empty evidence_id, got '{ev_id}'")
+
 
     if expected_case_ids is not None:
         if actual_case_ids != expected_case_ids:
@@ -224,11 +265,23 @@ def evaluate_samples():
     gold_path = os.path.join(BASE_DIR, "dataset", "sample_output.csv")
     pred_path = os.path.join(BASE_DIR, "sample_output_pred.csv")
     manifest_path = os.path.join(BASE_DIR, "dataset", "evidence_files.csv")
+    acts_path = os.path.join(BASE_DIR, "dataset", "system_activity.csv")
+    audits_path = os.path.join(BASE_DIR, "dataset", "user_audit_log.csv")
 
     valid_file_ids = set()
     if os.path.exists(manifest_path):
         with open(manifest_path, "r", encoding="utf-8") as f:
             valid_file_ids = {r["file_id"] for r in csv.DictReader(f)}
+
+    valid_activity_ids = set()
+    if os.path.exists(acts_path):
+        with open(acts_path, "r", encoding="utf-8") as f:
+            valid_activity_ids = {r["activity_id"] for r in csv.DictReader(f)}
+
+    valid_audit_ids = set()
+    if os.path.exists(audits_path):
+        with open(audits_path, "r", encoding="utf-8") as f:
+            valid_audit_ids = {r["audit_id"] for r in csv.DictReader(f)}
 
     print("Running deletion audit pipeline on sample dataset...")
     run_pipeline(target_csv=sample_reqs_path, output_csv_path=pred_path)
@@ -238,7 +291,14 @@ def evaluate_samples():
         gold = list(csv.DictReader(f))
     expected_case_ids = [r["case_id"] for r in gold]
 
-    is_valid, issues = validate_contract(pred_path, expected_row_count=32, valid_file_ids=valid_file_ids, expected_case_ids=expected_case_ids)
+    is_valid, issues = validate_contract(
+        pred_path,
+        expected_row_count=32,
+        valid_file_ids=valid_file_ids,
+        valid_activity_ids=valid_activity_ids,
+        valid_audit_ids=valid_audit_ids,
+        expected_case_ids=expected_case_ids
+    )
     if not is_valid:
         print(f"FAILED contract validation with {len(issues)} issues:")
         for iss in issues[:10]:
@@ -335,12 +395,24 @@ def evaluate_samples():
 def validate_file(target_file_path):
     """Validates an arbitrary output CSV against full contract rules."""
     manifest_path = os.path.join(BASE_DIR, "dataset", "evidence_files.csv")
+    acts_path = os.path.join(BASE_DIR, "dataset", "system_activity.csv")
+    audits_path = os.path.join(BASE_DIR, "dataset", "user_audit_log.csv")
     full_reqs_path = os.path.join(BASE_DIR, "dataset", "deletion_requests.csv")
 
     valid_file_ids = set()
     if os.path.exists(manifest_path):
         with open(manifest_path, "r", encoding="utf-8") as f:
             valid_file_ids = {r["file_id"] for r in csv.DictReader(f)}
+
+    valid_activity_ids = set()
+    if os.path.exists(acts_path):
+        with open(acts_path, "r", encoding="utf-8") as f:
+            valid_activity_ids = {r["activity_id"] for r in csv.DictReader(f)}
+
+    valid_audit_ids = set()
+    if os.path.exists(audits_path):
+        with open(audits_path, "r", encoding="utf-8") as f:
+            valid_audit_ids = {r["audit_id"] for r in csv.DictReader(f)}
 
     expected_cases = None
     expected_count = None
@@ -354,6 +426,8 @@ def validate_file(target_file_path):
         target_file_path, 
         expected_row_count=expected_count, 
         valid_file_ids=valid_file_ids,
+        valid_activity_ids=valid_activity_ids,
+        valid_audit_ids=valid_audit_ids,
         expected_case_ids=expected_cases
     )
     if not is_valid:

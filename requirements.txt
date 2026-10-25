@@ -1,0 +1,3 @@
+# NorthStar Shop Dependencies
+# Offline Deletion-Audit Engine
+pypdf>=3.0.0
