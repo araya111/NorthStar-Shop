@@ -25,13 +25,13 @@ Evaluated against the official participant-visible ground truth (`dataset/sample
 |---|---|---|
 | **Contract Schema Compliance** | **PASSED** | Validates row counts, JSON structure, consecutive step numbers, allowed ops/states |
 | **Case-Level Status Accuracy** | **100.00% (32 / 32)** | COMPLETE: 10, INCOMPLETE: 22, NOT_APPLICABLE: 0 |
-| **Exact Ordered Sequence Matches** | **21.88% (7 / 32)** | Exact match across all ordered JSON step arrays |
+| **Exact Ordered Sequence Matches** | **25.00% (8 / 32)** | Exact match across all ordered JSON step arrays |
 | **Total Benchmark Golden Steps** | 193 steps | Across all 32 benchmark cases |
-| **Step Field-Level Matches (1-to-1)** | **88.60% (171 / 193)** | Exact 1-to-1 bipartite match on `(phase, system_id, resource_id, operation, state)` |
-| **Strict Step Matches (incl. evidence)** | **88.60% (171 / 193)** | Exact 1-to-1 match including participant-visible evidence IDs |
-| **Step Precision** | **62.41%** | Precision of predicted findings, remediations, and verification checks |
-| **Step Recall** | **88.60%** | Recall of gold standard steps across systems and categories |
-| **Step F1 Score** | **73.23%** | Harmonic mean of strict 1-to-1 step precision and recall |
+| **Step Field-Level Matches (1-to-1)** | **90.16% (174 / 193)** | Exact 1-to-1 bipartite match on `(phase, system_id, resource_id, operation, state)` |
+| **Strict Step Matches (incl. evidence)** | **90.16% (174 / 193)** | Exact 1-to-1 match including participant-visible evidence IDs |
+| **Step Precision** | **63.50%** | Precision of predicted findings, remediations, and verification checks |
+| **Step Recall** | **90.16%** | Recall of gold standard steps across systems and categories |
+| **Step F1 Score** | **74.52%** | Harmonic mean of strict 1-to-1 step precision and recall |
 
 > **Ground Truth Disclosure Notice:** The ground truth for the 518 evaluation requests (`dataset/deletion_requests.csv`) is private to the challenge organizers and not available in the repository. No claims of 100% accuracy on the hidden evaluation set are made. For the 518 evaluation cases, our solution guarantees 100% contract and schema compliance, generating exactly 518 sorted, validly serialized rows with zero empty COMPLETE predictions.
 
@@ -81,6 +81,22 @@ During the comprehensive audit of the original codebase, several defects were di
 ### 5. Post-Remediation Verification Ordering and Status
 - **Defect:** When records were remediated via `DELETE_RECORD`, subsequent verification steps in incomplete cases erroneously defaulted to `VERIFY_RECORD_REDACTED` based on resource prefix.
 - **Fix:** Tracked planned remediation operations: any resource remediated via `DELETE_RECORD` is verified as `VERIFY_RECORD_ABSENT` with state `ABSENT`.
+
+### 6. Temporal Chronological Precedence & Cleaned Replica Tracking
+- **Defect:** Flat greedy scans across historical observations misclassified cleaned replicas as persistent leaks if an old snapshot recorded them as present.
+- **Fix:** Grouped observations per source and evaluated chronologically. The latest observation at or before `audit_at` governs the state; cleaned replicas verified absent are recognized as compliant, while active replication drift is accurately flagged.
+
+### 7. Resource-Aware Datastore Absence Verification
+- **Defect:** A generic origin fallback selected the newest file from broad origin names without inspecting whether the file actually contained account datastores.
+- **Fix:** Populated `account_datastore_files` dynamically during SQL/JSON parsing by verifying `customer_profiles` or `account_service` tables, ensuring verified absence proofs.
+
+### 8. IdentityGraph Ambiguity Protection
+- **Defect:** Shared identifiers across conflicting identities could merge unrelated subjects.
+- **Fix:** Implemented `ambiguous_identifiers` tracking to quarantine clashing emails and prevent unsupported completion claims.
+
+### 9. Hardened Intent Classification
+- **Defect:** Hypothetical queries ("if I decide to delete in the future") and quoted deletion statements could trigger false positive deletion pipelines.
+- **Fix:** Added regex filters rejecting hypothetical and quoted queries without deletion intent.
 
 ---
 

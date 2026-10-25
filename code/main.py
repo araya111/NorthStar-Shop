@@ -14,7 +14,7 @@ import sys
 import re
 import hashlib
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import pypdf
 
@@ -31,7 +31,15 @@ def load_csv(rel_path):
 
 
 def to_dt(s):
-    return datetime.fromisoformat(s.replace('Z', '+00:00'))
+    if not s or not isinstance(s, str):
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(s.replace('Z', '+00:00'))
+    except Exception:
+        try:
+            return datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except Exception:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 # ── 1. Identity Resolution & Historical Graph ─────────────────────────────────
@@ -45,23 +53,33 @@ class IdentityGraph:
         self.uid_to_hashes = defaultdict(set)
         self.hash_to_uid = {}
         self.uid_to_record = {}
+        self.ambiguous_identifiers = set()
 
         # Current snapshot
         for u in identities:
             uid = u["user_id"]
             em = u["email"].strip().lower()
-            self.email_to_uid[em] = uid
+            if em in self.email_to_uid and self.email_to_uid[em] != uid:
+                self.ambiguous_identifiers.add(em)
+            else:
+                self.email_to_uid[em] = uid
             self.uid_to_emails[uid].add(em)
             self.uid_to_record[uid] = u
 
             h = u.get("email_hash", "").strip().lower()
             if h:
+                if h in self.hash_to_uid and self.hash_to_uid[h] != uid:
+                    self.ambiguous_identifiers.add(h)
+                else:
+                    self.hash_to_uid[h] = uid
                 self.uid_to_hashes[uid].add(h)
-                self.hash_to_uid[h] = uid
             
             calc_h = hashlib.sha256(em.encode("utf-8")).hexdigest()
+            if calc_h in self.hash_to_uid and self.hash_to_uid[calc_h] != uid:
+                self.ambiguous_identifiers.add(calc_h)
+            else:
+                self.hash_to_uid[calc_h] = uid
             self.uid_to_hashes[uid].add(calc_h)
-            self.hash_to_uid[calc_h] = uid
 
         # Historical audit log changes
         for entry in audit_log:
@@ -72,22 +90,37 @@ class IdentityGraph:
                     if val:
                         em = val.strip().lower()
                         self.uid_to_emails[uid].add(em)
-                        if em not in self.email_to_uid:
+                        if em in self.email_to_uid and self.email_to_uid[em] != uid:
+                            self.ambiguous_identifiers.add(em)
+                        else:
                             self.email_to_uid[em] = uid
                         calc_h = hashlib.sha256(em.encode("utf-8")).hexdigest()
                         self.uid_to_hashes[uid].add(calc_h)
-                        self.hash_to_uid[calc_h] = uid
+                        if calc_h in self.hash_to_uid and self.hash_to_uid[calc_h] != uid:
+                            self.ambiguous_identifiers.add(calc_h)
+                        else:
+                            self.hash_to_uid[calc_h] = uid
             elif field == "email_hash":
                 for val in [entry.get("old_value"), entry.get("new_value")]:
                     if val:
                         h = val.strip().lower()
                         self.uid_to_hashes[uid].add(h)
-                        self.hash_to_uid[h] = uid
+                        if h in self.hash_to_uid and self.hash_to_uid[h] != uid:
+                            self.ambiguous_identifiers.add(h)
+                        else:
+                            self.hash_to_uid[h] = uid
 
-    def resolve_user_id(self, email):
-        if not email:
+    def resolve_user_id(self, identifier):
+        if not identifier:
             return None
-        return self.email_to_uid.get(str(email).strip().lower())
+        ident = str(identifier).strip().lower()
+        if ident in self.ambiguous_identifiers:
+            return None
+        if ident.startswith("user_"):
+            return ident
+        if len(ident) == 64 and ident in self.hash_to_uid:
+            return self.hash_to_uid[ident]
+        return self.email_to_uid.get(ident)
 
     def get_emails(self, user_id):
         return self.uid_to_emails.get(user_id, set())
@@ -104,6 +137,7 @@ class EvidenceCatalog:
     def __init__(self, manifest, id_graph=None, activities=None):
         self.manifest_dict = {r["file_id"]: r for r in manifest}
         self.records_by_file = defaultdict(list)
+        self.account_datastore_files = set()
         self.id_graph = id_graph
         self.activities = activities or []
         self._parse_all(manifest)
@@ -174,6 +208,8 @@ class EvidenceCatalog:
                 conn.executescript(f.read())
             cur = conn.cursor()
             tables = [r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+            if any("profile" in t.lower() or "account" in t.lower() for t in tables):
+                self.account_datastore_files.add(fid)
             for t in tables:
                 cols = [r[1] for r in cur.execute(f"PRAGMA table_info({t});").fetchall()]
                 rows = cur.execute(f"SELECT * FROM {t};").fetchall()
@@ -231,7 +267,14 @@ class EvidenceCatalog:
         try:
             with open(fpath, encoding="utf-8") as f:
                 data = json.load(f)
-            if "service_exports" in data:
+            if "snapshots" in data and isinstance(data["snapshots"], list):
+                for s in data["snapshots"]:
+                    if "profile" in s.get("collection", "").lower() or "account" in s.get("data_store", "").lower():
+                        self.account_datastore_files.add(fid)
+                        break
+            if "service_exports" in data and isinstance(data["service_exports"], dict):
+                if "account_service" in data["service_exports"]:
+                    self.account_datastore_files.add(fid)
                 se = data["service_exports"]
                 for item in se.get("account_service", {}).get("profile_lookups", []):
                     rid = item.get("resource_id")
@@ -538,6 +581,15 @@ def is_authorized_deletion_request(request_text):
     if not request_text:
         return False
     text = request_text.lower()
+
+    # Hypothetical or conditional query check
+    if re.search(r'\b(?:if\s+i\s+(?:decide|choose|want|ever)\s+to\s+delete|supposing\s+i\s+delete|in\s+case\s+i\s+delete|hypothetically)\b', text):
+        return False
+
+    # Quoting another person or message without requesting deletion oneself
+    if re.search(r'["\'](?:[^"\']*(?:delete|erase|remove|suppress|close)[^"\']*)["\']', text):
+        if re.search(r'\b(?:said|stated|told me|message said|faq says|didn\'?t send|did not send|keep it|help logging in|just asking)\b', text):
+            return False
     
     # Specific non-deletion user intents and negations
     negation_patterns = [
@@ -738,13 +790,14 @@ def build_case_output(case_id, deletion_status, violations, compliant_resources)
                 continue
             seen_rids.add(rid)
 
+            cat = r.get("category", "")
             if rid.startswith("account_"):
                 v_tuple = (1, 0, rid, "account_service", "VERIFY_RECORD_ABSENT", "ABSENT", ev_id)
             elif rid.startswith("export_"):
                 v_tuple = (2, 1, rid, "export_service", "VERIFY_RECORD_ABSENT", "ABSENT", ev_id)
             elif rid.startswith("search_"):
                 v_tuple = (2, 2, rid, "search_service", "VERIFY_RECORD_ABSENT", "ABSENT", ev_id)
-            elif rid.startswith("audit_record_"):
+            elif rid.startswith("audit_record_") or rid.startswith("tax_") or cat in ("TAX_INVOICE", "LEGAL_HOLD", "SECURITY_AUDIT_LOG", "SECURITY_LOG"):
                 v_tuple = (3, 0, rid, "security_service", "VERIFY_RECORD_PRESENT", "PRESENT", ev_id)
             elif rid.startswith("support_"):
                 v_tuple = (4, 1, rid, "support_platform", "VERIFY_RECORD_REDACTED", "REDACTED", ev_id)
@@ -919,8 +972,12 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
     primary_acc = sorted(user_accs)[0] if user_accs else None
 
     for rid, obs_list in res_obs.items():
-        obs_list.sort(key=lambda x: to_dt(x["captured_at"]))
-        latest_obs = obs_list[-1]
+        by_source = defaultdict(list)
+        for o in obs_list:
+            sk = o.get("table") or o.get("source") or o.get("service") or o.get("file_id")
+            by_source[sk].append(o)
+
+        latest_obs = sorted(obs_list, key=lambda x: to_dt(x["captured_at"]))[-1]
         cat = latest_obs.get("category")
         ev_id = latest_obs["file_id"]
 
@@ -928,47 +985,40 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
         viol_op = None
         viol_st = "PRESENT"
 
-        # Check if any replica snapshot shows remaining record (replication drift)
-        has_replica_leak = any(
-            (o.get("table", "").endswith("_replica") or "failover" in o.get("table", "")) and o.get("is_present")
-            for o in obs_list
-        )
-
-        for r in obs_list:
-            r_cat = r.get("category") or cat
+        # Evaluate the latest observation of each source at or before audit_at
+        for sk, s_obs in by_source.items():
+            s_latest = sorted(s_obs, key=lambda x: to_dt(x["captured_at"]))[-1]
+            r_cat = s_latest.get("category") or cat
             is_del_cat = (r_cat in ("USER_PROFILE", "SECONDARY_IDENTIFIER", "SEARCH_INDEX_ENTRY", "CACHE_ENTRY", "SUPPORT_ATTACHMENT", "USER_EXPORT", "MARKETING_PROFILE", "ACCOUNT_DATABASE"))
             is_red_cat = (r_cat in ("SUPPORT_MESSAGE", "EMAIL_DELIVERY_LOG", "ACCOUNT_TOMBSTONE"))
             is_anon_cat = (r_cat in ("ANALYTICS_PROFILE", "PRODUCT_TELEMETRY"))
 
-            if (is_del_cat or rid.startswith("account_") or rid.startswith("search_") or rid.startswith("export_") or rid.startswith("marketing_") or r.get("is_secondary_contact")) and (r.get("is_present") or has_replica_leak) and not r.get("is_absent"):
+            if (is_del_cat or rid.startswith("account_") or rid.startswith("search_") or rid.startswith("export_") or rid.startswith("marketing_") or s_latest.get("is_secondary_contact")) and s_latest.get("is_present") and not s_latest.get("is_absent"):
                 is_viol = True
                 viol_op = "REPORT_REMAINING_RECORD"
-                viol_st = "PRESENT"
-                ev_id = r["file_id"]
+                ev_id = s_latest["file_id"]
                 break
-            elif (is_red_cat or rid.startswith("support_") or rid.startswith("tombstone_")) and r.get("has_pii"):
+            elif (is_red_cat or rid.startswith("support_") or rid.startswith("tombstone_")) and s_latest.get("has_pii"):
                 is_viol = True
                 viol_op = "REPORT_EXPOSED_PII"
-                viol_st = "PRESENT"
-                ev_id = r["file_id"]
+                ev_id = s_latest["file_id"]
                 break
-            elif (is_anon_cat or rid.startswith("analytics_")) and r.get("has_pii"):
+            elif (is_anon_cat or rid.startswith("analytics_")) and s_latest.get("has_pii"):
                 is_viol = True
                 viol_op = "REPORT_EXPOSED_PII"
-                viol_st = "PRESENT"
-                ev_id = r["file_id"]
+                ev_id = s_latest["file_id"]
                 break
-            elif (rid.startswith("data_flow_") or r_cat == "DATA_FLOW") and r.get("enabled"):
+            elif (rid.startswith("data_flow_") or r_cat == "DATA_FLOW") and s_latest.get("enabled"):
                 is_viol = True
                 viol_op = "REPORT_ACTIVE_DATA_FLOW"
                 viol_st = "ACTIVE"
-                ev_id = r["file_id"]
+                ev_id = s_latest["file_id"]
                 break
-            elif (rid.startswith("backup_") or r_cat == "BACKUP_ARCHIVE") and r.get("restore_allowed"):
+            elif (rid.startswith("backup_") or r_cat == "BACKUP_ARCHIVE") and s_latest.get("restore_allowed"):
                 is_viol = True
                 viol_op = "REPORT_RESTORE_RISK"
                 viol_st = "ACTIVE"
-                ev_id = r["file_id"]
+                ev_id = s_latest["file_id"]
                 break
 
         if is_viol:
@@ -988,9 +1038,10 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
 
     pred_status = "INCOMPLETE" if violations else "COMPLETE"
 
-    # If primary account not yet in lists, find evidence of its absence
+    # If primary account not yet in lists, find evidence of its absence via resource-aware datastore resolution
     if primary_acc and not any(r["resource_id"] == primary_acc for r in compliant + violations):
         ev_proof = ""
+        # 1. Direct explicit absent/404 lookup in parsed records
         for fid, records in catalog.records_by_file.items():
             cap_time = to_dt(catalog.manifest_dict[fid]["captured_at"])
             if cap_time <= aud_time:
@@ -999,22 +1050,18 @@ def audit_case(req, id_graph, catalog, user_to_resources, activities):
                         ev_proof = fid
                         break
                 if ev_proof: break
+
+        # 2. Account datastore snapshot (files verified to contain customer_profiles / account_service tables)
         if not ev_proof:
-            account_origins = {
-                "customer_account_failover_replica_capture",
-                "customer_data_failover_replica_capture",
-                "records_assurance_snapshot_bundle",
-                "service_resource_export",
-                "service_readback_logs",
-            }
             candidates = [
                 (fid, to_dt(info["captured_at"]))
                 for fid, info in catalog.manifest_dict.items()
-                if info.get("origin") in account_origins and to_dt(info["captured_at"]) <= aud_time
+                if fid in catalog.account_datastore_files and to_dt(info["captured_at"]) <= aud_time
             ]
             candidates.sort(key=lambda x: x[1], reverse=True)
             if candidates:
                 ev_proof = candidates[0][0]
+
         compliant.insert(0, {"resource_id": primary_acc, "evidence_id": ev_proof if pred_status == "COMPLETE" else ""})
 
     # Evidence coverage check: A COMPLETE case cannot have 0 evidence or 0 compliant steps!

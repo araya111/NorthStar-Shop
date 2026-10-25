@@ -63,3 +63,13 @@ During repository auditing, defect diagnosis, and evaluation framework implement
 
 1. **Inference Cost:** By encoding policy rules into deterministic, testable Python structures rather than invoking LLM API endpoints for every row, the production submission costs **$0.00 in per-request inference API fees**.
 2. **Scalability:** The local engine processes over 280 requests per second with negligible memory and CPU usage, enabling instant real-time deletion audits at enterprise scale.
+
+---
+
+## 5. Zero External API and Zero Network Dependency Guarantee
+
+To satisfy the strictest competition compliance rules:
+1. **Zero External Calls:** The codebase does not import or use `requests`, `httpx`, `urllib`, `aiohttp`, `socket`, `http.client`, or any cloud/model SDKs (`boto3`, `google.generativeai`, `openai`, `anthropic`).
+2. **No Remote Endpoints or Credentials:** No `.env` files, API keys, or webhooks exist in the submission package.
+3. **Pure Local Multi-Modal Processing:** All input CSVs, JSON exports, SQL replicas, text logs, and PDF files are parsed strictly on local disk using standard library modules and local `pypdf`.
+4. **Automated Offline Isolation Gate:** The test suite and release gate enforce active socket interception, raising fatal `RuntimeError` if any outbound network connection is attempted.

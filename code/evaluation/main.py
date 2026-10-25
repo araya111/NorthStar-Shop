@@ -372,9 +372,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Evaluation & Contract Validation Runner")
     parser.add_argument("--validate", type=str, default=None, help="Path to CSV file to validate against contract")
+    parser.add_argument("--release-gate", action="store_true", help="Execute complete automated release gate suite")
     args = parser.parse_args()
 
-    if args.validate:
+    if args.release_gate:
+        from evaluation.release_gate import run_all_gates
+        ok = run_all_gates()
+        sys.exit(0 if ok else 1)
+    elif args.validate:
         ok = validate_file(args.validate)
         if not ok:
             sys.exit(1)

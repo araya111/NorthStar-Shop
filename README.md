@@ -34,7 +34,13 @@ Your solution must:
 Run the starter Python entry point with:
 
 ```bash
-python3 code/main.py
+python code/main.py
+```
+
+Run the automated release gate to verify all 8 critical gates in one command:
+
+```bash
+python code/evaluation/main.py --release-gate
 ```
 
 The blank template at `dataset/output.csv` is provided as a reference. Your final generated file for submission must be the root-level `output.csv`.
